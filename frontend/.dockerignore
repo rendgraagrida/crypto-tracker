@@ -1,0 +1,45 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Testing and coverage
+coverage
+
+# Next.js build output
+.next/
+out/
+build/
+dist/
+
+# Environment files (sensitive credentials)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env*
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Git and OS metadata
+.git
+.gitignore
+.DS_Store
+Thumbs.db
+
+# IDE & AI Docs
+.vscode
+.idea
+AGENTS.md
+CLAUDE.md
+README.md
+*.md
+
+# Docker
+Dockerfile
+.dockerignore

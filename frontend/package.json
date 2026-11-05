@@ -1,0 +1,35 @@
+{
+  "name": "frontend-pelacak",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "test": "node --no-warnings --experimental-strip-types --test test/utils.test.ts test/blockchain.test.ts test/indicators.test.ts test/blacklist.test.ts test/telegram.test.ts",
+    "test:integration": "node --no-warnings --experimental-strip-types --test test/integration.test.ts",
+    "test:all": "node --no-warnings --experimental-strip-types --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.4",
+    "@supabase/supabase-js": "^2.112.3",
+    "axios": "^1.19.0",
+    "ethers": "^6.17.0",
+    "lucide-react": "^1.33.0",
+    "next": "16.3.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "technicalindicators": "^3.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.1",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
