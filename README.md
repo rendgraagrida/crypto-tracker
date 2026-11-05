@@ -6,6 +6,8 @@ Proyek ini menggabungkan dua repositori:
 - **Backend:** `trade-apps-backend` (Node.js, Multichain EVM & Solana balance tracker, Supabase sync)
 - **Frontend:** `frontend-pelacak-app` (Next.js 16, React 19, Tailwind CSS, Telegram alerts radar & coin sniper)
 
+
+> 📄 **Rencana Transformasi & Audit Arsitektur Bot:** Lihat dokumen lengkap di **[BOT_ARCHITECTURE_AND_PLAN.md](./BOT_ARCHITECTURE_AND_PLAN.md)** untuk detail audit bug, rekomendasi migrasi ke Cloudflare Workers + D1 + Helius Webhook, serta roadmap pengembangan Telegram Bot.
 ---
 
 ## 📁 Struktur Direktori
@@ -23,6 +25,7 @@ crypto-tracker/
 │   ├── package.json
 │   ├── Dockerfile            # Container frontend
 │   └── .env.example          # Panduan environment frontend
+├── BOT_ARCHITECTURE_AND_PLAN.md # Dokumen audit teknis, arsitektur Cloudflare & roadmap bot
 ├── docker-compose.yml        # Orkestrasi Docker untuk frontend & backend
 ├── package.json              # NPM Workspaces root runner
 └── README.md
