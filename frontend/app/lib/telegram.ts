@@ -208,8 +208,11 @@ export function formatSummaryMessage(params: {
 }): string {
   let text = `💼 <b>PELACAK PORTFOLIO RADAR SUMMARY</b> 💼\n\n`;
   text += `🎯 <b>Tracked Wallets:</b> <b>${params.walletCount} targets</b>\n`;
-  text += `🪙 <b>Tracked Coins:</b> <b>${params.coinCount} assets</b>\n\n`;
-
+  text += `🪙 <b>Tracked Coins:</b> <b>${params.coinCount} assets</b>\n`;
+  if (params.totalNetWorth > 0) {
+    text += `💰 <b>Total Est. Net Worth:</b> <b>${formatCurrency(params.totalNetWorth)}</b>\n`;
+  }
+  text += `\n`;
   if (params.topWallets && params.topWallets.length > 0) {
     text += `<b>Tracked Target Wallets:</b>\n`;
     params.topWallets.slice(0, 5).forEach((w, idx) => {
