@@ -1,0 +1,33 @@
+{
+  "name": "crypto-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monorepo for Crypto Tracker: Multichain Tracker Backend & Next.js Analytics Frontend",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "npm --prefix backend run dev",
+    "build:frontend": "npm --prefix frontend run build",
+    "start:frontend": "npm --prefix frontend run start",
+    "start:backend": "npm --prefix backend run start",
+    "test:frontend": "npm --prefix frontend run test",
+    "test:all": "npm --prefix frontend run test:all",
+    "lint:frontend": "npm --prefix frontend run lint",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down"
+  },
+  "keywords": [
+    "crypto",
+    "tracker",
+    "blockchain",
+    "solana",
+    "evm",
+    "nextjs",
+    "supabase"
+  ],
+  "author": "RendgraAgrida",
+  "license": "ISC"
+}
