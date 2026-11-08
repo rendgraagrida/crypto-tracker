@@ -1,0 +1,32 @@
+# Example only. Never auto-installed/enabled; requires explicit financial/host authorization.
+[Unit]
+Description=Crypto Tracker isolated transaction executor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=crypto-trader
+Group=crypto-trader
+WorkingDirectory=/opt/crypto-tracker/frontend
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/crypto-trader.env
+ExecStart=/usr/bin/node --no-warnings --experimental-strip-types /opt/crypto-tracker/frontend/scripts/trader.ts
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=45
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictSUIDSGID=true
+UMask=0077
+Nice=15
+# Example safety caps, not measured headroom. Verify separately from the game/bot service.
+MemoryHigh=384M
+MemoryMax=512M
+CPUQuota=25%
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

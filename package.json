@@ -2,20 +2,23 @@
   "name": "crypto-tracker",
   "version": "1.0.0",
   "private": true,
-  "description": "Monorepo for Crypto Tracker: Multichain Tracker Backend & Next.js Analytics Frontend",
+  "description": "Crypto Tracker: native Telegram bot, deterministic analysis and optional local Hermes",
   "workspaces": [
-    "frontend",
-    "backend"
+    "frontend"
   ],
   "scripts": {
-    "dev": "concurrently -n \"FRONTEND,BACKEND\" -c \"cyan,magenta\" \"npm --prefix frontend run dev\" \"npm --prefix backend run dev\"",
-    "dev:frontend": "npm --prefix frontend run dev",
-    "dev:backend": "npm --prefix backend run dev",
-    "build:frontend": "npm --prefix frontend run build",
-    "start:frontend": "npm --prefix frontend run start",
-    "start:backend": "npm --prefix backend run start",
-    "test:frontend": "npm --prefix frontend run test",
-    "test:all": "npm --prefix frontend run test:all",
+    "dev": "npm --workspace frontend run bot",
+    "bot:start": "npm --workspace frontend run bot",
+    "trade:worker": "npm --workspace frontend run trade:worker --",
+    "paper:replay": "npm --workspace frontend run paper:replay --",
+    "db:bundle": "node scripts/database-bundle.mjs",
+    "db:backup": "node scripts/database-backup.mjs",
+    "dev:frontend": "npm --workspace frontend run dev",
+    "build:frontend": "npm --workspace frontend run build",
+    "start:frontend": "npm --workspace frontend run start",
+    "test:frontend": "npm --workspace frontend test",
+    "test:all": "npm --workspace frontend run test:all",
+    "check": "npm --workspace frontend run typecheck",
     "lint:frontend": "npm --prefix frontend run lint",
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down"
@@ -30,8 +33,5 @@
     "supabase"
   ],
   "author": "RendgraAgrida",
-  "license": "ISC",
-  "devDependencies": {
-    "concurrently": "^10.0.6"
-  }
+  "license": "ISC"
 }

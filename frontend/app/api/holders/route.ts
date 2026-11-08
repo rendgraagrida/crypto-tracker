@@ -1,86 +1,35 @@
-import { NextResponse } from 'next/server';
-import { Connection, PublicKey } from '@solana/web3.js';
-import axios from 'axios';
+import { normalizeAddress, normalizeChain } from '../../lib/auth.ts';
+import { fetchRugcheckReport } from '../../lib/coin-analyzer.ts';
+import { readBoundedJson } from '../../lib/bounded-json.ts';
+const NextResponse = Response;
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const contract_address = searchParams.get('contract_address');
   const chain_network = searchParams.get('chain_network'); 
-  const price_usd = Number(searchParams.get('price_usd') || 0);
+  const priceParam = searchParams.get('price_usd');
+  const price_usd = priceParam === null ? null : Number(priceParam);
 
   if (!contract_address || !chain_network) {
     return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
   }
 
-  const chain = chain_network.toLowerCase();
+  let chain: string;
+  try { chain = normalizeChain(chain_network); normalizeAddress(chain, contract_address); }
+  catch { return NextResponse.json({ error: 'Invalid chain or address' }, { status: 400 }); }
 
   try {
-    // 1. SOLANA LOGIC (Helius RPC)
     if (chain === 'solana') {
-      const heliusKey = process.env.HELIUS_API_KEY;
-      
-      if (!heliusKey) {
-        return NextResponse.json({ error: 'API Key Helius belum dikonfigurasi. Silakan tambahkan HELIUS_API_KEY.' }, { status: 500 });
-      }
-
-      const connection = new Connection(`https://mainnet.helius-rpc.com/?api-key=${heliusKey}`);
-      let mintPubkey: PublicKey;
-      
-      try {
-        mintPubkey = new PublicKey(contract_address);
-      } catch (e) {
-        return NextResponse.json({ error: 'Invalid Solana contract address' }, { status: 400 });
-      }
-
-      // Get largest token accounts
-      let largestAccounts;
-      try {
-        largestAccounts = await connection.getTokenLargestAccounts(mintPubkey);
-      } catch (rpcError: any) {
-        if (rpcError.message?.includes('32001') || rpcError.message?.includes('Too many requests')) {
-          return NextResponse.json({ error: 'Terlalu banyak request. Node publik tidak kuat. Hubungi admin.' }, { status: 503 });
-        }
-        throw rpcError;
-      }
-      
-      const accounts = largestAccounts.value.slice(0, 10); // Top 10
-
-      // We need to find the OWNER of these token accounts
-      const holders = [];
-      let totalSupplyRaw = 0;
-
-      try {
-        const supplyInfo = await connection.getTokenSupply(mintPubkey);
-        totalSupplyRaw = Number(supplyInfo.value.amount);
-      } catch(e) {}
-
-      for (const account of accounts) {
-        try {
-          const accountInfo = await connection.getParsedAccountInfo(account.address);
-          const parsedData = (accountInfo.value?.data as any)?.parsed?.info;
-          const ownerAddress = parsedData?.owner;
-
-          if (ownerAddress) {
-            let share = 0;
-            const balanceStr = account.amount;
-            if (totalSupplyRaw > 0) {
-              share = (Number(balanceStr) / totalSupplyRaw) * 100;
-            }
-            
-            const balanceFmt = account.uiAmount || 0;
-            holders.push({
-              address: ownerAddress,
-              balance: balanceFmt,
-              value_usd: balanceFmt * price_usd,
-              share: share > 0 ? Number(share.toFixed(2)) : 0
-            });
-          }
-        } catch (e) {
-          console.error(`Failed to parse owner for token account ${account.address.toBase58()}`, e);
-        }
-      }
-
-      return NextResponse.json({ holders });
+      const report = await fetchRugcheckReport(contract_address);
+      if (!report.data || typeof report.data !== 'object') return NextResponse.json({ error: 'Rugcheck unavailable', source: 'Rugcheck' }, { status: 502 });
+      const data = report.data as { topHolders?: unknown; reportGeneratedAt?: unknown };
+      const entries = Array.isArray(data.topHolders) ? data.topHolders : [];
+      const holders = entries.slice(0, 10).map((holder: { owner?: unknown; uiAmount?: unknown; pct?: unknown }) => {
+        const balance = typeof holder.uiAmount === 'number' && Number.isFinite(holder.uiAmount) && holder.uiAmount >= 0 ? holder.uiAmount : null;
+        const share = typeof holder.pct === 'number' && Number.isFinite(holder.pct) && holder.pct >= 0 && holder.pct <= 100 ? holder.pct : null;
+        return { address: typeof holder.owner === 'string' ? holder.owner : null, balance, share, value_usd: balance !== null && price_usd !== null && Number.isFinite(price_usd) ? balance * price_usd : null };
+      });
+      return NextResponse.json({ holders, source: 'Rugcheck topHolders', source_time: typeof data.reportGeneratedAt === 'string' ? data.reportGeneratedAt : null, coverage: 'Provider-reported top token accounts; may not include all accounts for each owner or represent unique top owners.' });
     }
     // 2. EVM LOGIC (Covalent API)
     else {
@@ -91,6 +40,7 @@ export async function GET(request: Request) {
       else if (chain === 'polygon' || chain === 'matic') chainId = 137;
       else if (chain === 'arbitrum') chainId = 42161;
       else if (chain === 'optimism') chainId = 10;
+      else if (chain === 'avalanche') chainId = 43114;
       
       const covalentKey = process.env.COVALENT_API_KEY;
       if (!covalentKey) {
@@ -100,34 +50,33 @@ export async function GET(request: Request) {
       // Use V2 endpoint without page-size to avoid timeouts on popular BSC tokens
       const covalentUrl = `https://api.covalenthq.com/v1/${chainId}/tokens/${contract_address}/token_holders_v2/?key=${covalentKey}`;
       
-      const response = await axios.get(covalentUrl);
-      const items = (response.data?.data?.items || []).slice(0, 10); // Ambil 10 teratas
+      const response = await fetch(covalentUrl, { signal: AbortSignal.timeout(8000) });
+      if (!response.ok) return NextResponse.json({ error: `Covalent HTTP ${response.status}` }, { status: 502 });
+      const json = await readBoundedJson(response.body, 2_000_000, 8000) as { data?: { items?: unknown[] } };
+      const items = (json.data?.items || []).slice(0, 10);
 
       const holders = items.map((item: any) => {
         // Covalent returns raw balance string
-        const decimals = item.contract_decimals || 18;
-        let balanceFormatted = 0;
-        let shareCalculated = 0;
-        
-        try {
-          const bal = BigInt(item.balance);
-          const totalSupply = BigInt(item.total_supply || '0');
-          balanceFormatted = Number(bal) / (10 ** decimals);
-          
-          if (totalSupply > BigInt(0)) {
-            const totalSupplyFormatted = Number(totalSupply) / (10 ** decimals);
-            shareCalculated = (balanceFormatted / totalSupplyFormatted) * 100;
-            if (shareCalculated > 100) shareCalculated = 100; // Cap at 100% if Covalent data is glitchy
+        const decimals = item.contract_decimals;
+        let balanceFormatted: number | null = null;
+        let shareCalculated: number | null = null;
+        if (typeof decimals === 'number' && Number.isInteger(decimals) && decimals >= 0 && decimals <= 255 && typeof item.balance === 'string' && /^\d{1,78}$/.test(item.balance)) {
+          const raw = BigInt(item.balance);
+          const padded = item.balance.padStart(decimals + 1, '0');
+          const normalized = decimals ? `${padded.slice(0, -decimals)}.${padded.slice(-decimals)}` : padded;
+          const amount = Number(normalized);
+          if (Number.isFinite(amount)) balanceFormatted = amount;
+          if (typeof item.total_supply === 'string' && /^\d{1,78}$/.test(item.total_supply)) {
+            const supply = BigInt(item.total_supply);
+            if (supply > BigInt(0) && raw <= supply) shareCalculated = Number((raw * BigInt(10000) + supply / BigInt(2)) / supply) / 100;
           }
-        } catch(e) {
-          balanceFormatted = 0;
         }
 
         return {
           address: item.address,
           balance: balanceFormatted,
-          value_usd: balanceFormatted * price_usd,
-          share: Number(shareCalculated.toFixed(2))
+          value_usd: balanceFormatted !== null && price_usd !== null && Number.isFinite(price_usd) ? balanceFormatted * price_usd : null,
+          share: shareCalculated === null ? null : Number(shareCalculated.toFixed(2))
         };
       });
 

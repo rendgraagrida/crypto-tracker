@@ -45,3 +45,7 @@ Thumbs.db
 
 # Vercel
 .vercel
+
+# Database archives contain private chat and financial state
+*.dump
+*.backup

@@ -1,15 +1,13 @@
-import { NextResponse } from 'next/server';
+import { normalizeAddress, normalizeChain } from '../../lib/auth.ts';
+import { fetchMarketPairs } from '../../lib/market-data.ts';
+import { readBoundedJson } from '../../lib/bounded-json.ts';
+const NextResponse = Response;
 
-async function enrichHistory(history: any[], contract_address: string) {
+async function enrichHistory(history: any[], contract_address: string, chain: string) {
   if (history.length === 0) return history;
   try {
-    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${contract_address}`);
-    if (!res.ok) return history;
-    const data = await res.json();
-    if (!data.pairs || data.pairs.length === 0) return history;
-    
-    // Get most liquid pair
-    const pair = data.pairs.sort((a: any, b: any) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
+    const pair = (await fetchMarketPairs(chain, [contract_address])).get(normalizeAddress(chain, contract_address));
+    if (!pair) return history;
     const currentPriceUsd = parseFloat(pair.priceUsd || '0');
     const currentPriceNative = parseFloat(pair.priceNative || '0');
     const currentMcap = pair.fdv || pair.marketCap || 0;
@@ -37,7 +35,8 @@ async function enrichHistory(history: any[], contract_address: string) {
       return {
         ...tx,
         historical_price_usd: historicalPriceUsd,
-        historical_mc: historicalMc
+        historical_mc: historicalMc,
+        valuation_basis: 'Estimated using current market data where historical pricing is unavailable'
       };
     });
   } catch (e) {
@@ -49,18 +48,15 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const wallet_address = searchParams.get('wallet_address');
   const contract_address = searchParams.get('contract_address');
-  let chain_network = searchParams.get('chain_network');
+  const chain_network = searchParams.get('chain_network');
 
   if (!wallet_address || !contract_address || !chain_network) {
     return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
   }
+  let chain: string;
+  try { chain = normalizeChain(chain_network); normalizeAddress(chain, contract_address); normalizeAddress(chain, wallet_address); }
+  catch { return NextResponse.json({ error: 'Invalid chain or address' }, { status: 400 }); }
 
-  // Auto-detect Solana if wallet address doesn't start with '0x'
-  if (!wallet_address.startsWith('0x')) {
-    chain_network = 'solana';
-  }
-
-  const chain = chain_network.toLowerCase();
 
   try {
     if (chain === 'solana') {
@@ -69,38 +65,23 @@ export async function GET(request: Request) {
 
       // Removed &type=TRANSFER so we also get swaps and other transactions that move tokens
       const url = `https://api.helius.xyz/v0/addresses/${wallet_address}/transactions?api-key=${heliusKey}&limit=50`;
-      const res = await fetch(url, { headers: { Accept: 'application/json' } });
+      const res = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
       if (!res.ok) {
-        const errText = await res.text();
-        return NextResponse.json({ error: `Helius API error: ${errText}` }, { status: 502 });
+        return NextResponse.json({ error: `Helius API error: ${res.status}` }, { status: 502 });
       }
 
-      const txList: any[] = await res.json();
-      const mintLower = contract_address.toLowerCase();
+      const txList = await readBoundedJson(res.body, 2_000_000, 8000) as any[];
       const history: any[] = [];
 
       for (const tx of txList) {
         const transfers: any[] = tx.tokenTransfers || [];
-        const nativeTransfers: any[] = tx.nativeTransfers || [];
-        
-        let solSpent = 0;
-        let solReceived = 0;
-        for (const nt of nativeTransfers) {
-          if (nt.fromUserAccount?.toLowerCase() === wallet_address.toLowerCase()) {
-            solSpent += (nt.amount || 0) / 1e9;
-          }
-          if (nt.toUserAccount?.toLowerCase() === wallet_address.toLowerCase()) {
-            solReceived += (nt.amount || 0) / 1e9;
-          }
-        }
 
         for (const t of transfers) {
-          if (t.mint?.toLowerCase() !== mintLower) continue;
-          const isBuy = t.toUserAccount?.toLowerCase() === wallet_address.toLowerCase();
+          if (t.mint !== contract_address) continue;
+          const isBuy = t.toUserAccount === wallet_address;
+          if (!isBuy && t.fromUserAccount !== wallet_address) continue;
           
-          let value_native = 0;
-          if (isBuy && solSpent > 0) value_native = solSpent;
-          if (!isBuy && solReceived > 0) value_native = solReceived;
+          const value_native = null;
 
           history.push({
             type: isBuy ? 'IN' : 'OUT',
@@ -117,7 +98,7 @@ export async function GET(request: Request) {
         }
       }
 
-      const finalHistory = await enrichHistory(history.slice(0, 25), contract_address);
+      const finalHistory = await enrichHistory(history.slice(0, 25), contract_address, chain);
       return NextResponse.json({ history: finalHistory });
     }
 
@@ -128,6 +109,8 @@ export async function GET(request: Request) {
     else if (chain === 'robinhood' || chain.includes('robinhood') || chain === 'rh') chainId = 4663;
     else if (chain === 'polygon' || chain === 'matic') chainId = 137;
     else if (chain === 'arbitrum') chainId = 42161;
+    else if (chain === 'optimism') chainId = 10;
+    else if (chain === 'avalanche') chainId = 43114;
 
     const explorerMap: Record<number, string> = {
       1: 'https://etherscan.io/tx',
@@ -136,17 +119,17 @@ export async function GET(request: Request) {
       4663: 'https://explorer.robinhood.com/tx',
       137: 'https://polygonscan.com/tx',
       42161: 'https://arbiscan.io/tx',
+      10: 'https://optimistic.etherscan.io/tx',
+      43114: 'https://snowtrace.io/tx',
     };
     const explorerBase = explorerMap[chainId] || 'https://etherscan.io/tx';
 
     // Build Alchemy URL
-    const alchemyKey = process.env.ALCHEMY_ETH_URL?.split('/').pop() || 'alch_N9FL-z41qp-r45WkzqTfZ';
-    let alchemyUrl = '';
-    if (chainId === 1) alchemyUrl = `https://eth-mainnet.g.alchemy.com/v2/${alchemyKey}`;
-    else if (chainId === 56) alchemyUrl = `https://bnb-mainnet.g.alchemy.com/v2/${alchemyKey}`;
-    else if (chainId === 8453) alchemyUrl = `https://base-mainnet.g.alchemy.com/v2/${alchemyKey}`;
-    else if (chainId === 137) alchemyUrl = `https://polygon-mainnet.g.alchemy.com/v2/${alchemyKey}`;
-    else if (chainId === 42161) alchemyUrl = `https://arb-mainnet.g.alchemy.com/v2/${alchemyKey}`;
+    const rpcVariables: Record<number, string> = {
+      1: 'ALCHEMY_ETH_URL', 56: 'ALCHEMY_BSC_URL', 8453: 'ALCHEMY_BASE_URL',
+      4663: 'ALCHEMY_ROBINHOOD_URL', 137: 'ALCHEMY_POLYGON_URL', 42161: 'ALCHEMY_ARBITRUM_URL', 10: 'ALCHEMY_OPTIMISM_URL', 43114: 'ALCHEMY_AVALANCHE_URL',
+    };
+    const alchemyUrl = process.env[rpcVariables[chainId]] || '';
 
     if (alchemyUrl) {
       // Use Alchemy
@@ -170,10 +153,11 @@ export async function GET(request: Request) {
             id: 1,
             method: 'alchemy_getAssetTransfers',
             params: [params]
-          })
+          }),
+          signal: AbortSignal.timeout(8000)
         });
         if (!req.ok) return [];
-        const res = await req.json();
+        const res = await readBoundedJson(req.body, 2_000_000, 8000) as { result?: { transfers?: unknown[] } };
         return res.result?.transfers || [];
       };
 
@@ -205,7 +189,7 @@ export async function GET(request: Request) {
         return tb - ta;
       });
 
-      const finalHistory = await enrichHistory(history.slice(0, 25), contract_address);
+      const finalHistory = await enrichHistory(history.slice(0, 25), contract_address, chain);
       return NextResponse.json({ history: finalHistory });
     }
 
@@ -214,27 +198,13 @@ export async function GET(request: Request) {
     if (!covalentKey) return NextResponse.json({ error: 'Missing COVALENT_API_KEY' }, { status: 500 });
 
     const url = `https://api.covalenthq.com/v1/${chainId}/address/${wallet_address}/transfers_v2/?contract-address=${contract_address}&page-size=25&key=${covalentKey}`;
-    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    const res = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
     
     if (!res.ok) {
-      const errText = await res.text();
-      let errMsg = `Covalent returned status ${res.status}`;
-      try {
-        if (errText) {
-          const errJson = JSON.parse(errText);
-          errMsg = errJson.error_message || errMsg;
-        }
-      } catch (e) {
-        errMsg = errText || errMsg;
-      }
-      
-      if (res.status === 500 || res.status === 504) {
-         errMsg = "Timeout: Dompet ini terlalu sibuk/memiliki terlalu banyak transaksi sehingga gagal diproses oleh API.";
-      }
-      return NextResponse.json({ error: `Covalent API error: ${errMsg}` }, { status: 502 });
+      return NextResponse.json({ error: `Covalent API error: HTTP ${res.status}` }, { status: 502 });
     }
 
-    const json = await res.json();
+    const json = await readBoundedJson(res.body, 2_000_000, 8000) as { data?: { items?: any[] } };
     const items: any[] = json.data?.items || [];
     const history: any[] = [];
 
@@ -258,7 +228,7 @@ export async function GET(request: Request) {
       }
     }
 
-    const finalHistory = await enrichHistory(history.slice(0, 25), contract_address);
+    const finalHistory = await enrichHistory(history.slice(0, 25), contract_address, chain);
     return NextResponse.json({ history: finalHistory });
 
   } catch (error: any) {

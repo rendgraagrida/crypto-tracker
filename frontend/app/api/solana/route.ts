@@ -1,17 +1,23 @@
 export const dynamic = 'force-dynamic';
-import { NextResponse } from 'next/server';
+import { fetchMarketPairs, fetchNativeCoinPrice } from '../../lib/market-data.ts';
+import { normalizeChain } from '../../lib/auth.ts';
+import { readBoundedJson } from '../../lib/bounded-json.ts';
+import { boundedFetch } from '../../lib/bounded-fetch.ts';
+const NextResponse = Response;
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import type { ConnectionConfig } from '@solana/web3.js';
 import { createClient } from '@supabase/supabase-js';
 
 const METAPLEX_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+const metadataCache = new Map<string, { expires: number; value: { name: string; symbol: string; uri: string } | null }>();
 
 function getSupabase() {
   const url = process.env.SUPABASE_URL || '';
   const key = process.env.SUPABASE_KEY || '';
   if (!url || !key) return null;
-  return createClient(url, key);
+  return createClient(url, key, { global: { fetch: boundedFetch } });
 }
 
 // 🟢 Menghitung alamat PDA Metaplex Metadata on-chain
@@ -56,7 +62,7 @@ function decodeMetaplex(buf: Buffer | Uint8Array | null): { name: string; symbol
 
 export async function POST(request: Request) {
   try {
-    const { wallet_address, page = 1 } = await request.json();
+    const { wallet_address, page = 1 } = await readBoundedJson(request.body, 16384, 5000) as { wallet_address: string; page?: number };
 
     if (!wallet_address) {
       return NextResponse.json({ error: "Wallet address Solana wajib diisi" }, { status: 400 });
@@ -75,34 +81,32 @@ export async function POST(request: Request) {
     try {
       const supabase = getSupabase();
       if (supabase) {
-        const [whitelistRes, blacklistRes] = await Promise.all([
-          supabase.from('tracked_coins').select('contract_address'),
-          supabase.from('blacklist_tokens').select('contract_address'),
+        const [trackedRes, whitelistRes, blacklistRes] = await Promise.all([
+          supabase.from('tracked_coins').select('contract_address, chain_network'),
+          supabase.from('whitelist_tokens').select('contract_address, chain_network'),
+          supabase.from('blacklist_tokens').select('contract_address, chain_network'),
         ]);
-        if (whitelistRes.data && Array.isArray(whitelistRes.data)) {
-          VIP_TOKENS = whitelistRes.data.map((item: any) => item.contract_address?.toLowerCase() || "");
-        }
-        if (blacklistRes.data && Array.isArray(blacklistRes.data)) {
-          BLACKLISTED_TOKENS = blacklistRes.data.map((item: any) => item.contract_address?.toLowerCase() || "");
-        }
+        const matching = (rows: { contract_address: string; chain_network: string }[] | null) => (rows || []).flatMap(item => {
+          try { return normalizeChain(item.chain_network) === 'solana' ? [item.contract_address] : []; } catch { return []; }
+        });
+        VIP_TOKENS = [...new Set([...matching(trackedRes.data), ...matching(whitelistRes.data)])];
+        BLACKLISTED_TOKENS = matching(blacklistRes.data);
       }
     } catch (err) {}
 
     const rpcUrl = process.env.ALCHEMY_SOL_URL || 'https://api.mainnet-beta.solana.com';
-    const connection = new Connection(rpcUrl, 'confirmed');
+    // Web3 passes URL strings and JSON request options to its fetch hook.
+    const connection = new Connection(rpcUrl, { commitment: 'confirmed', disableRetryOnRateLimit: true, fetch: boundedFetch as unknown as NonNullable<ConnectionConfig['fetch']> });
 
     // 2. Ambil saldo Native SOL & Akun Token SPL (Standard + Token-2022) secara PARALEL
-    const [lamports, cgData, standardTokensRes, token2022Res] = await Promise.all([
+    const [lamports, solPriceUsd, standardTokensRes, token2022Res] = await Promise.all([
       connection.getBalance(pubKey),
-      fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd', {
-        headers: { 'Accept': 'application/json' }
-      }).then(r => r.json()).catch(() => ({})),
+      fetchNativeCoinPrice('solana'),
       connection.getParsedTokenAccountsByOwner(pubKey, { programId: TOKEN_PROGRAM_ID }),
       connection.getParsedTokenAccountsByOwner(pubKey, { programId: TOKEN_2022_PROGRAM_ID })
     ]);
 
     const solBalanceNum = lamports / LAMPORTS_PER_SOL;
-    const solPriceUsd = cgData?.solana?.usd || 0;
 
     // 3. Gabungkan seluruh akun token SPL (Standard + Token-2022)
     const allParsedAccounts = [...(standardTokensRes.value || []), ...(token2022Res.value || [])];
@@ -123,132 +127,76 @@ export async function POST(request: Request) {
 
     const mintAddresses = rawSplTokens.map((t: any) => t.mint);
 
-    // 4. DEKODE METADATA ON-CHAIN METAPLEX (Nama Asli & Ticker Simbol)
-    const onChainMetaMap: Record<string, { name: string; symbol: string; uri: string }> = {};
-    if (mintAddresses.length > 0) {
-      try {
-        const pdas = mintAddresses.map((mint: string) => getMetadataPDA(mint));
-        const validPdas = pdas.filter((p): p is PublicKey => p !== null);
-        const accountInfos = await connection.getMultipleAccountsInfo(validPdas);
-        
-        let validIdx = 0;
-        mintAddresses.forEach((mint: string, idx: number) => {
-          if (pdas[idx] !== null) {
-            const acc = accountInfos[validIdx++];
-            if (acc && acc.data) {
-              const decoded = decodeMetaplex(acc.data);
-              if (decoded && (decoded.name || decoded.symbol)) {
-                onChainMetaMap[mint] = decoded;
-              }
-            }
-          }
-        });
-      } catch (err) {
-        console.error("Metaplex On-Chain Decoder error:", err);
-      }
-    }
 
     // 5. TOKENS KHUSUS DENGAN HARGA PASTI (Mencegah DexScreener mengembalikan 30 pair WSOL dan mengabaikan token lain)
-    const KNOWN_SOL_TOKENS: Record<string, { name: string; symbol: string; getPrice: (sp: number) => number; logo: string | null }> = {
+    const KNOWN_SOL_TOKENS: Record<string, { name: string; symbol: string; getPrice: (sp: number | null) => number | null; logo: string | null }> = {
       'So11111111111111111111111111111111111111112': {
         name: 'Wrapped SOL',
         symbol: 'WSOL',
-        getPrice: (sp: number) => sp,
+        getPrice: (sp: number | null) => sp,
         logo: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/So11111111111111111111111111111111111111112/logo.png'
       },
       'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': {
         name: 'USD Coin',
         symbol: 'USDC',
-        getPrice: () => 1.00,
+        getPrice: () => null,
         logo: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/logo.png'
       },
       'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': {
         name: 'Tether USD',
         symbol: 'USDT',
-        getPrice: () => 1.00,
+        getPrice: () => null,
         logo: 'https://raw.githubusercontent.com/solana-labs/token-list/main/assets/mainnet/Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB/logo.png'
       }
     };
-    const KNOWN_MINTS_SET = new Set(Object.keys(KNOWN_SOL_TOKENS).map(k => k.toLowerCase()));
-
-    // 6. AMBIL HARGA LIVE USD & LOGO DARI DEXSCREENER (Chunking up to 180 tokens)
-    const dexMetaMap: Record<string, { name: string; symbol: string; price_usd: number; logo: string | null }> = {};
-    
-    // Jangan kirim WSOL/USDC/USDT atau Blacklisted token ke DexScreener multi-token query
-    const validMintsForPricing = mintAddresses.filter(mint => {
-      const lower = mint.toLowerCase();
-      return !BLACKLISTED_TOKENS.includes(lower) && !KNOWN_MINTS_SET.has(lower);
-    });
-    
-    if (validMintsForPricing.length > 0) {
-      try {
-        const chunkSize = 30;
-        const chunks = [];
-        for (let i = 0; i < validMintsForPricing.length; i += chunkSize) {
-          chunks.push(validMintsForPricing.slice(i, i + chunkSize));
-        }
-
-        // Limit to max 6 chunks (180 tokens) to prevent rate limit
-        const limitedChunks = chunks.slice(0, 6);
-
-        await Promise.all(limitedChunks.map(async (chunk) => {
-          const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${chunk.join(",")}`, {
-            headers: { 'Accept': 'application/json' }
-          }).then(r => r.json()).catch(() => null);
-
-          if (dexRes?.pairs && Array.isArray(dexRes.pairs)) {
-            dexRes.pairs.forEach((p: any) => {
-              const addr = p.baseToken?.address;
-              if (addr && !dexMetaMap[addr]) {
-                dexMetaMap[addr] = {
-                  name: p.baseToken.name || "",
-                  symbol: p.baseToken.symbol || "",
-                  price_usd: parseFloat(p.priceUsd || "0") || 0,
-                  logo: p.info?.imageUrl || null
-                };
-              }
-            });
-          }
-        }));
-      } catch (e) {
-        console.error("DexScreener API error:", e);
+    const validMints = mintAddresses.filter((mint: string) => !BLACKLISTED_TOKENS.includes(mint));
+    const pairs = await fetchMarketPairs('solana', validMints);
+    const onChainMetaMap: Record<string, { name: string; symbol: string; uri: string }> = {};
+    const missing = [...new Set<string>(validMints)].filter(mint => {
+      const pair = pairs.get(mint);
+      if (KNOWN_SOL_TOKENS[mint] || (pair?.baseToken?.name && pair?.baseToken?.symbol)) return false;
+      const cached = metadataCache.get(mint);
+      if (cached && cached.expires > Date.now()) {
+        if (cached.value) onChainMetaMap[mint] = cached.value;
+        return false;
       }
+      return true;
+    });
+    for (let i = 0; i < missing.length; i += 100) {
+      const items = missing.slice(i, i + 100).map(mint => ({ mint, pda: getMetadataPDA(mint) })).filter((item): item is { mint: string; pda: PublicKey } => item.pda !== null);
+      if (!items.length) continue;
+      try {
+        const accounts = await connection.getMultipleAccountsInfo(items.map(item => item.pda));
+        items.forEach((item, index) => {
+          const decoded = decodeMetaplex(accounts[index]?.data ?? null);
+          metadataCache.delete(item.mint);
+          metadataCache.set(item.mint, { expires: Date.now() + 300_000, value: decoded });
+          if (decoded) onChainMetaMap[item.mint] = decoded;
+        });
+        while (metadataCache.size > 3000) metadataCache.delete(metadataCache.keys().next().value!);
+      } catch { /* Metadata unavailable; leave unknown. */ }
     }
 
     // 7. GABUNGKAN & STANDARISASI SELURUH DATA SPL TOKEN
     const formattedSplTokens = rawSplTokens.map((t: any) => {
       const onChain = onChainMetaMap[t.mint] || {};
-      const dex = dexMetaMap[t.mint] || { price_usd: 0, logo: null };
+      const pair = pairs.get(t.mint);
+      const parsedPrice = pair?.priceUsd === undefined ? null : Number(pair.priceUsd);
       const known = KNOWN_SOL_TOKENS[t.mint];
-      const mintLower = t.mint.toLowerCase();
-      const isVip = VIP_TOKENS.includes(mintLower);
-      const isBlacklisted = BLACKLISTED_TOKENS.includes(mintLower);
+      const isVip = VIP_TOKENS.includes(t.mint);
+      const isBlacklisted = BLACKLISTED_TOKENS.includes(t.mint);
+      const tokenName = known?.name || pair?.baseToken?.name || onChain.name || 'SPL Token';
+      const tokenSymbol = known?.symbol || pair?.baseToken?.symbol || onChain.symbol || `${t.mint.slice(0, 4)}...${t.mint.slice(-4)}`;
+      const tokenLogo = known?.logo || pair?.info?.imageUrl || null;
+      const price = known?.symbol === 'WSOL' ? known.getPrice(solPriceUsd) : parsedPrice !== null && Number.isFinite(parsedPrice) && parsedPrice >= 0 ? parsedPrice : null;
+      const totalValue = price === null ? null : t.amount * price;
 
-      // Prioritas Metadata: Known Config -> DexScreener -> On-chain Metaplex -> Fallback
-      let tokenName = known?.name || dex.name || onChain.name || `SPL Token`;
-      let tokenSymbol = known?.symbol || dex.symbol || onChain.symbol || `${t.mint.slice(0, 4)}...${t.mint.slice(-4)}`;
-      let tokenLogo = known?.logo || dex.logo || null;
-      let price = known ? known.getPrice(solPriceUsd) : (dex.price_usd || 0);
-      let totalValue = t.amount * price;
-
-      // Hardcoded metadata untuk koin populer Solana jika belum terindex DEX
-      if (t.mint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') {
-        tokenName = "USD Coin";
-        tokenSymbol = "USDC";
-        price = price || 1.00;
-        totalValue = t.amount * price;
-      } else if (t.mint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') {
-        tokenName = "Tether USD";
-        tokenSymbol = "USDT";
-        price = price || 1.00;
-        totalValue = t.amount * price;
-      }
 
       // 🚫 SPAM / QUARANTINE FILTER:
       // 1. Blacklist -> Paksa spam (alasan: blacklist)
       // 2. VIP -> Selalu lolos
       // 3. Scam keywords -> Spam (alasan: keyword)
-      // 4. Unknown price / 0 USD value -> Karantina Zero Value (alasan: zero_value)
+      // 4. A known zero value may be quarantined; unavailable price is not evidence of spam.
       let isSpam = false;
       let spamReason: 'blacklist' | 'keyword' | 'zero_value' | null = null;
       if (isBlacklisted) {
@@ -268,7 +216,7 @@ export async function POST(request: Request) {
         if (hasKeyword) {
           isSpam = true;
           spamReason = 'keyword';
-        } else if (!price || price <= 0 || !totalValue || totalValue <= 0) {
+        } else if (price !== null && totalValue !== null && (price <= 0 || totalValue <= 0)) {
           isSpam = true;
           spamReason = 'zero_value';
         }
@@ -298,7 +246,7 @@ export async function POST(request: Request) {
         logo: null,
         balance: solBalanceNum.toFixed(4),
         price_usd: solPriceUsd,
-        total_value_usd: solBalanceNum * solPriceUsd,
+        total_value_usd: solPriceUsd === null ? null : solBalanceNum * solPriceUsd,
         is_spam: false,
         spam_reason: null
       });

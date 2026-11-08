@@ -176,6 +176,7 @@ export const NETWORK_MAP: Record<string, string> = {
   'ethereum': 'eth',
   'eth': 'eth',
   'bsc': 'bsc',
+  'bnb': 'bsc',
   'binance': 'bsc',
   'base chain': 'base',
   'base': 'base',
@@ -184,7 +185,14 @@ export const NETWORK_MAP: Record<string, string> = {
   'solana': 'solana',
   'sol': 'solana',
   'arbitrum': 'arbitrum',
-  'polygon': 'polygon_pos'
+  'arbitrum_one': 'arbitrum',
+  'polygon': 'polygon_pos',
+  'polygon_pos': 'polygon_pos',
+  'matic': 'polygon_pos',
+  'avalanche': 'avax',
+  'avax': 'avax',
+  'optimism': 'optimism',
+  'op': 'optimism'
 };
 
 export function getNetworkSlug(chainNetwork: string): string {

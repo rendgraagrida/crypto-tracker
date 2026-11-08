@@ -22,9 +22,9 @@ interface TokenItem {
   name: string;
   symbol: string;
   logo: string | null;
-  balance: string;
-  price_usd?: number;
-  total_value_usd?: number;
+  balance: string | null;
+  price_usd?: number | null;
+  total_value_usd?: number | null;
   is_spam?: boolean;
   spam_reason?: 'blacklist' | 'keyword' | 'zero_value' | null;
   injected_chain?: string;
@@ -33,6 +33,7 @@ interface TokenItem {
 interface WhitelistItem {
   contract_address: string;
   label: string;
+  chain_network?: string | null;
 }
 
 interface TrackedCoin {
@@ -149,7 +150,7 @@ export default function Dashboard() {
   
   const [myWalletTokens, setMyWalletTokens] = useState<TokenItem[]>([]);
   const [myWalletLoading, setMyWalletLoading] = useState(false);
-  const [myWalletNetWorth, setMyWalletNetWorth] = useState(0);
+  const [myWalletNetWorth, setMyWalletNetWorth] = useState<number | null>(null);
 
   const [isHoldersModalOpen, setIsHoldersModalOpen] = useState(false);
   const [selectedCoinHolders, setSelectedCoinHolders] = useState<any[]>([]);
@@ -196,7 +197,7 @@ export default function Dashboard() {
       setIsSendingTelegramTest(true);
       const res = await axios.post('/api/tele-bot', { action: 'test' });
       if (res.data.success) {
-        alert('✅ Test alert message sent to your Telegram! Check your phone/app.');
+        alert('Pesan uji diantrekan. Periksa Telegram untuk mengonfirmasi pengiriman; worker bot harus aktif.');
       } else {
         alert(`❌ [FAILED] ${res.data.error || 'Could not send test message'}`);
       }
@@ -212,7 +213,7 @@ export default function Dashboard() {
       setIsScanningTelegramRadar(true);
       const res = await axios.post('/api/tele-bot', { action: 'scan_and_alert' });
       if (res.data.success) {
-        alert(`🔍 Radar scan complete!\n• Scanned: ${res.data.scannedCoins} coins & ${res.data.scannedWallets} wallets\n• Alerts dispatched: ${res.data.alertsSent}`);
+        alert('Radar scan diantrekan. Hasil dan alert diproses worker bot; ini belum berarti scan atau pengiriman selesai.');
       } else {
         alert(`❌ [FAILED] ${res.data.error || 'Scan failed'}`);
       }
@@ -381,7 +382,7 @@ export default function Dashboard() {
             const response = await axios.post('/api/tokens', { wallet_address: connectedWallet, chain_network: chain, page: 1 });
             return (response.data.tokens || []).map((t: any) => {
               const isNative = t.contract_address === 'NATIVE_COIN';
-              const isZeroOrUnknown = !isNative && (!t.price_usd || t.price_usd <= 0 || !t.total_value_usd || t.total_value_usd <= 0);
+              const isZeroOrUnknown = !isNative && ((t.price_usd != null && t.price_usd <= 0) || (t.total_value_usd != null && t.total_value_usd <= 0));
               const spamReason = t.spam_reason || (isZeroOrUnknown ? 'zero_value' : null);
               return { 
                 ...t, 
@@ -399,7 +400,7 @@ export default function Dashboard() {
           return (b.total_value_usd || 0) - (a.total_value_usd || 0);
         });
         setMyWalletTokens(combinedTokens);
-        const netWorth = combinedTokens.filter((t: any) => !t.is_spam).reduce((sum: number, token: any) => sum + (token.total_value_usd || 0), 0);
+        const netWorth = combinedTokens.some((t: TokenItem) => !t.is_spam && t.total_value_usd == null) ? null : combinedTokens.filter((t: TokenItem) => !t.is_spam).reduce((sum: number, token: TokenItem) => sum + (token.total_value_usd ?? 0), 0);
         setMyWalletNetWorth(netWorth);
       } else {
         const isSolana = connectedNetwork.toUpperCase() === 'SOLANA';
@@ -407,7 +408,7 @@ export default function Dashboard() {
         const response = await axios.post(endpoint, { wallet_address: connectedWallet, chain_network: connectedNetwork, page: 1 });
         const newTokens = (response.data.tokens || []).map((t: any) => {
           const isNative = t.contract_address === 'NATIVE_COIN';
-          const isZeroOrUnknown = !isNative && (!t.price_usd || t.price_usd <= 0 || !t.total_value_usd || t.total_value_usd <= 0);
+          const isZeroOrUnknown = !isNative && ((t.price_usd != null && t.price_usd <= 0) || (t.total_value_usd != null && t.total_value_usd <= 0));
           const spamReason = t.spam_reason || (isZeroOrUnknown ? 'zero_value' : null);
           return { 
             ...t, 
@@ -417,7 +418,7 @@ export default function Dashboard() {
           };
         });
         setMyWalletTokens(newTokens);
-        const netWorth = newTokens.filter((t: any) => !t.is_spam).reduce((sum: number, token: any) => sum + (token.total_value_usd || 0), 0);
+        const netWorth = newTokens.some((t: TokenItem) => !t.is_spam && t.total_value_usd == null) ? null : newTokens.filter((t: TokenItem) => !t.is_spam).reduce((sum: number, token: TokenItem) => sum + (token.total_value_usd ?? 0), 0);
         setMyWalletNetWorth(netWorth);
       }
     } catch (error) {
@@ -449,7 +450,7 @@ export default function Dashboard() {
       const rawTokens = response.data.tokens || [];
       const newTokens = rawTokens.map((t: any) => {
         const isNative = t.contract_address === 'NATIVE_COIN';
-        const isZeroOrUnknown = !isNative && (!t.price_usd || t.price_usd <= 0 || !t.total_value_usd || t.total_value_usd <= 0);
+        const isZeroOrUnknown = !isNative && ((t.price_usd != null && t.price_usd <= 0) || (t.total_value_usd != null && t.total_value_usd <= 0));
         const spamReason = t.spam_reason || (isZeroOrUnknown ? 'zero_value' : null);
         return { 
           ...t, 
@@ -536,7 +537,7 @@ export default function Dashboard() {
       const rawTokens = response.data.tokens || [];
       const newTokens = rawTokens.map((t: any) => {
         const isNative = t.contract_address === 'NATIVE_COIN';
-        const isZeroOrUnknown = !isNative && (!t.price_usd || t.price_usd <= 0 || !t.total_value_usd || t.total_value_usd <= 0);
+        const isZeroOrUnknown = !isNative && ((t.price_usd != null && t.price_usd <= 0) || (t.total_value_usd != null && t.total_value_usd <= 0));
         const spamReason = t.spam_reason || (isZeroOrUnknown ? 'zero_value' : null);
         return { 
           ...t, 
@@ -586,6 +587,7 @@ export default function Dashboard() {
   };
 
   const handleSaveLabel = async (walletAddress: string, chainNetwork: string) => {
+    if (!hasSelectedChain(chainNetwork)) return;
     if (!editingLabelValue.trim()) {
       alert("Target label cannot be empty!");
       return;
@@ -618,52 +620,94 @@ export default function Dashboard() {
   };
 
   const handleDeleteWallet = async (walletAddress: string, chainNetwork: string) => {
+    if (!hasSelectedChain(chainNetwork)) return;
     const memoryKey = `${walletAddress}-${chainNetwork}`;
     if (!confirm(`Are you sure you want to remove target ${walletAddress.slice(0,6)}...?`)) return;
     try {
       await axios.delete('/api/watchlist', { data: { wallet_address: walletAddress, chain_network: chainNetwork } });
       if (expandedWallet === memoryKey) setExpandedWallet(null);
       fetchWatchlist();
-    } catch (error: any) {}
+    } catch (error: any) { alert(error.response?.data?.error || 'Failed to remove wallet'); }
   };
 
   const handleDeleteAllWatchlist = async () => {
-    if (!confirm(`Are you sure you want to delete ALL targets from Wallet Tracker? This cannot be undone.`)) return;
+    const chain = selectBulkChain(wallets.map(w => w.chain_network));
+    if (!chain || !confirm(`Delete all wallet targets on ${chain}, including network aliases? This cannot be undone.`)) return;
     try {
-      await axios.delete('/api/watchlist', { data: { deleteAll: true } });
+      const response = await axios.delete('/api/watchlist', { data: { deleteAll: true, chain_network: chain } });
+      if (response.data?.error) { alert(response.data.error); return; }
       setExpandedWallet(null);
       fetchWatchlist();
     } catch (error: any) {
-      alert("Failed to delete all target wallets");
+      alert(error.response?.data?.error || "Failed to delete all target wallets");
+      fetchWatchlist();
     }
   };
 
   const handleDeleteAllTrack = async () => {
-    if (!confirm(`Are you sure you want to delete ALL tokens from Coin Tracker?`)) return;
+    const chain = selectBulkChain(trackedCoins.map(c => c.chain_network));
+    if (!chain || !confirm(`Delete all tracked coins on ${chain}, including network aliases?`)) return;
     try {
-      await axios.delete('/api/track', { data: { deleteAll: true } });
+      const response = await axios.delete('/api/track', { data: { deleteAll: true, chain_network: chain } });
+      if (response.data?.error) { alert(response.data.error); return; }
       fetchTrackedCoins();
     } catch (error: any) {
-      alert("Failed to delete all tracked coins");
+      alert(error.response?.data?.error || "Failed to delete all tracked coins");
+      fetchTrackedCoins();
     }
   };
 
   const handleDeleteAllBlacklist = async () => {
-    if (!confirm(`Are you sure you want to delete ALL tokens from Blacklist?`)) return;
+    const chain = selectBulkChain(blacklist.map(item => item.chain_network));
+    if (!chain || !confirm(`Delete all blacklisted tokens on ${chain}, including network aliases?`)) return;
     try {
-      await axios.delete('/api/blacklist', { data: { deleteAll: true } });
+      const response = await axios.delete('/api/blacklist', { data: { deleteAll: true, chain_network: chain } });
+      if (response.data?.error) { alert(response.data.error); return; }
       fetchBlacklist();
     } catch (error: any) {
-      alert("Failed to delete all blacklisted tokens");
+      alert(error.response?.data?.error || "Failed to delete all blacklisted tokens");
+      fetchBlacklist();
     }
   };
+  const hasSelectedChain = (chain: string | null | undefined) => {
+    if (!chain || /^(unknown|omnichain|evm|any network)$/i.test(chain.trim()) || chain.toUpperCase().includes('EVM (')) {
+      alert('Select a specific network first. Legacy entries without a network cannot be changed by address alone.');
+      return false;
+    }
+    return true;
+  };
+  const canonicalChain = (input: string | null | undefined): string | null => {
+    if (!input) return null;
+    const value = input.trim().toLowerCase();
+    const aliases: Record<string, string> = { sol: 'solana', eth: 'ethereum', 'base chain': 'base', binance: 'bsc', bnb: 'bsc', matic: 'polygon', polygon_pos: 'polygon', arbitrum_one: 'arbitrum', op: 'optimism', avax: 'avalanche', rh: 'robinhood', 'robinhood chain': 'robinhood' };
+    const result = aliases[value] || value;
+    return ['solana', 'ethereum', 'base', 'bsc', 'polygon', 'arbitrum', 'optimism', 'avalanche', 'robinhood'].includes(result) ? result : null;
+  };
+  const sameAsset = (item: { contract_address: string; chain_network?: string | null }, address: string, network: string) => {
+    const chain = canonicalChain(network);
+    return chain !== null && canonicalChain(item.chain_network) === chain &&
+      (chain === 'solana' ? item.contract_address === address : item.contract_address.toLowerCase() === address.toLowerCase());
+  };
+  const selectBulkChain = (networks: Array<string | null | undefined>): string | null => {
+    const choices = [...new Set(networks.filter((chain): chain is string =>
+      typeof chain === 'string' && !!chain.trim() && !/^(unknown|omnichain|evm|any network)$/i.test(chain.trim()) && !chain.toUpperCase().includes('EVM (')
+    ))];
+    if (!choices.length) { alert('No specific network is available for bulk deletion.'); return null; }
+    const selected = prompt(`Select one stored network exactly: ${choices.join(', ')}`);
+    if (selected === null) return null;
+    if (!choices.includes(selected)) { alert('Select one of the listed networks exactly.'); return null; }
+    return selected;
+  };
+
 
   const handleAddWhitelist = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newWlAddress || !newWlLabel) return;
+    const chainNetwork = prompt('Enter a specific network for this token (e.g. Solana, Ethereum, BSC, Base Chain):');
+    if (!hasSelectedChain(chainNetwork)) return;
     try {
       setIsWlSubmitting(true);
-      const response = await axios.post('/api/whitelist', { contract_address: newWlAddress, label: newWlLabel });
+      const response = await axios.post('/api/whitelist', { contract_address: newWlAddress, label: newWlLabel, chain_network: chainNetwork });
       
       if (response.data.error) {
         alert(`[FAILED] ${response.data.error}`);
@@ -680,12 +724,13 @@ export default function Dashboard() {
     }
   };
 
-  const handleRemoveWhitelist = async (contract_address: string) => {
-    if (!confirm(`Remove from whitelist?`)) return;
+  const handleRemoveWhitelist = async (contract_address: string, chain_network?: string | null) => {
+    if (!hasSelectedChain(chain_network) || !confirm(`Remove from whitelist?`)) return;
     try {
-      await axios.delete('/api/whitelist', { data: { contract_address } });
+      const response = await axios.delete('/api/whitelist', { data: { contract_address, chain_network } });
+      if (response.data?.error) { alert(response.data.error); return; }
       fetchWhitelist();
-    } catch (error: any) {}
+    } catch (error: any) { alert(error.response?.data?.error || 'Failed to remove from whitelist'); }
   };
 
   const handleViewHolders = async (coin: TrackedCoin) => {
@@ -885,30 +930,33 @@ export default function Dashboard() {
     }
   };
 
-  const handleRemoveTrack = async (contract_address: string) => {
-    if (!confirm(`Remove token from Coin Tracker?`)) return;
+  const handleRemoveTrack = async (coin: TrackedCoin) => {
+    if (!hasSelectedChain(coin.chain_network) || !confirm(`Remove token from Coin Tracker?`)) return;
     try {
-      await axios.delete('/api/track', { data: { contract_address } });
-      setTrackedCoins(prev => prev.filter(c => c.contract_address !== contract_address));
-    } catch (error) {}
+      const response = await axios.delete('/api/track', { data: { contract_address: coin.contract_address, chain_network: coin.chain_network } });
+      if (response.data?.error) { alert(response.data.error); return; }
+      setTrackedCoins(prev => prev.filter(c => c.contract_address !== coin.contract_address || c.chain_network !== coin.chain_network));
+    } catch (error: any) { alert(error.response?.data?.error || 'Failed to remove token'); }
   };
 
   const handleTogglePrimaryCoin = async (coin: TrackedCoin) => {
+    if (!hasSelectedChain(coin.chain_network)) return;
     const newVal = !coin.is_primary;
     // Optimistic update
     setTrackedCoins(prev => prev.map(c =>
-      c.contract_address === coin.contract_address ? { ...c, is_primary: newVal } : c
+      c.contract_address === coin.contract_address && c.chain_network === coin.chain_network ? { ...c, is_primary: newVal } : c
     ));
     try {
       const res = await axios.patch('/api/track', {
         contract_address: coin.contract_address,
+        chain_network: coin.chain_network,
         is_primary: newVal
       });
       if (res.data?.limitReached || res.data?.error) {
         alert(res.data.error || 'Maksimal 5 coin utama.');
         // Rollback
         setTrackedCoins(prev => prev.map(c =>
-          c.contract_address === coin.contract_address ? { ...c, is_primary: coin.is_primary } : c
+          c.contract_address === coin.contract_address && c.chain_network === coin.chain_network ? { ...c, is_primary: coin.is_primary } : c
         ));
       }
     } catch (err: any) {
@@ -916,16 +964,17 @@ export default function Dashboard() {
       alert(msg);
       // Rollback
       setTrackedCoins(prev => prev.map(c =>
-        c.contract_address === coin.contract_address ? { ...c, is_primary: coin.is_primary } : c
+        c.contract_address === coin.contract_address && c.chain_network === coin.chain_network ? { ...c, is_primary: coin.is_primary } : c
       ));
     }
   };
 
   const handleTogglePrimaryWallet = async (wallet: WalletItem) => {
+    if (!hasSelectedChain(wallet.chain_network)) return;
     const newVal = !wallet.is_primary;
     // Optimistic update
     setWallets(prev => prev.map(w =>
-      w.wallet_address === wallet.wallet_address ? { ...w, is_primary: newVal } : w
+      w.wallet_address === wallet.wallet_address && w.chain_network === wallet.chain_network ? { ...w, is_primary: newVal } : w
     ));
     try {
       const res = await axios.patch('/api/watchlist', {
@@ -937,7 +986,7 @@ export default function Dashboard() {
         alert(res.data.error || 'Maksimal 5 wallet utama.');
         // Rollback
         setWallets(prev => prev.map(w =>
-          w.wallet_address === wallet.wallet_address ? { ...w, is_primary: wallet.is_primary } : w
+          w.wallet_address === wallet.wallet_address && w.chain_network === wallet.chain_network ? { ...w, is_primary: wallet.is_primary } : w
         ));
       }
     } catch (err: any) {
@@ -945,18 +994,20 @@ export default function Dashboard() {
       alert(msg);
       // Rollback
       setWallets(prev => prev.map(w =>
-        w.wallet_address === wallet.wallet_address ? { ...w, is_primary: wallet.is_primary } : w
+        w.wallet_address === wallet.wallet_address && w.chain_network === wallet.chain_network ? { ...w, is_primary: wallet.is_primary } : w
       ));
     }
   };
 
   // Helper: mark a specific contract as spam/non-spam in all cached wallet data (no full reset)
-  const patchTokenSpamStatus = (contractAddress: string, isSpam: boolean) => {
+  const patchTokenSpamStatus = (contractAddress: string, isSpam: boolean, chainNetwork: string) => {
     setWalletTokens(prev => {
       const updated = { ...prev };
       for (const key in updated) {
+        const wallet = wallets.find(w => `${w.wallet_address}-${w.chain_network}` === key);
+        if (!wallet || wallet.chain_network.toLowerCase() !== chainNetwork.toLowerCase()) continue;
         updated[key] = updated[key].map(token =>
-          token.contract_address.toLowerCase() === contractAddress.toLowerCase()
+          (chainNetwork.toLowerCase() === 'solana' ? token.contract_address === contractAddress : token.contract_address.toLowerCase() === contractAddress.toLowerCase())
             ? { ...token, is_spam: isSpam }
             : token
         );
@@ -983,7 +1034,7 @@ export default function Dashboard() {
       setNewBlLabel('');
       fetchBlacklist();
       // ✅ Surgical update: mark token as spam in all cached wallets
-      patchTokenSpamStatus(newBlAddress, true);
+      patchTokenSpamStatus(newBlAddress, true, newBlNetwork);
     } catch (error: any) {
       alert(error.response?.data?.error || "Failed to add token to Blacklist");
     } finally {
@@ -991,40 +1042,45 @@ export default function Dashboard() {
     }
   };
 
-  const handleRemoveBlacklist = async (contract_address: string) => {
-    if (!confirm(`Remove token from Blacklist?`)) return;
+  const handleRemoveBlacklist = async (contract_address: string, chain_network?: string) => {
+    if (!hasSelectedChain(chain_network) || !confirm(`Remove token from Blacklist?`)) return;
     try {
-      await axios.delete('/api/blacklist', { data: { contract_address } });
+      const response = await axios.delete('/api/blacklist', { data: { contract_address, chain_network } });
+      if (response.data?.error) { alert(response.data.error); return; }
       fetchBlacklist();
-      // ✅ Surgical update: unmark spam
-      patchTokenSpamStatus(contract_address, false);
-    } catch (error) {}
+      patchTokenSpamStatus(contract_address, false, chain_network!);
+    } catch (error: any) { alert(error.response?.data?.error || 'Failed to remove from blacklist'); }
   };
 
   const handleQuickTrack = async (contractAddress: string, label: string, chainNetwork: string) => {
     if (!contractAddress || contractAddress === 'NATIVE_COIN') return;
+    if (!hasSelectedChain(chainNetwork)) return;
     try {
-      // Unmark from spam
-      await axios.post('/api/whitelist', {
-        contract_address: contractAddress,
-        label: label || 'Whitelisted Token',
-      });
-      fetchWhitelist();
+      const alreadyWhitelisted = whitelist.some(item => sameAsset(item, contractAddress, chainNetwork));
+      if (!alreadyWhitelisted) {
+        try {
+          const response = await axios.post('/api/whitelist', { contract_address: contractAddress, chain_network: chainNetwork, label: label || 'Whitelisted Token' });
+          if (response.data?.error) throw new Error(response.data.error);
+        } catch (error: any) {
+          if (error.response?.status !== 409) throw error;
+          const latest = await axios.get('/api/whitelist');
+          if (!Array.isArray(latest.data) || !latest.data.some((item: WhitelistItem) => sameAsset(item, contractAddress, chainNetwork))) throw error;
+          setWhitelist(latest.data);
+        }
+        fetchWhitelist();
+      }
 
-      // Add to Coin Tracker
-      const response = await axios.post('/api/track', {
-        contract_address: contractAddress,
-        chain_network: chainNetwork || 'Unknown',
-        label: label || 'Tracked Token',
-      });
-      
-      if (response.data.error && !response.data.error.includes('sudah') && !response.data.error.includes('already')) {
-        alert(`[FAILED] ${response.data.error}`);
-        return;
+      try {
+        const response = await axios.post('/api/track', { contract_address: contractAddress, chain_network: chainNetwork, label: label || 'Tracked Token' });
+        if (response.data?.error) throw new Error(response.data.error);
+      } catch (error: any) {
+        if (error.response?.status !== 409) throw error;
+        const latest = await axios.get('/api/track');
+        if (!Array.isArray(latest.data) || !latest.data.some((item: TrackedCoin) => sameAsset(item, contractAddress, chainNetwork))) throw error;
       }
 
       // ✅ Surgical update: unmark spam for this token
-      patchTokenSpamStatus(contractAddress, false);
+      patchTokenSpamStatus(contractAddress, false, chainNetwork);
       
       // Update Coin Tracker data
       await fetchTrackedCoins();
@@ -1037,6 +1093,7 @@ export default function Dashboard() {
 
   const handleQuickBlacklist = async (contractAddress: string, label: string, chainNetwork: string) => {
     if (!contractAddress || contractAddress === 'NATIVE_COIN') return;
+    if (!hasSelectedChain(chainNetwork)) return;
     try {
       const response = await axios.post('/api/blacklist', {
         contract_address: contractAddress,
@@ -1049,7 +1106,7 @@ export default function Dashboard() {
       }
       fetchBlacklist();
       // ✅ Surgical update: mark token as spam
-      patchTokenSpamStatus(contractAddress, true);
+      patchTokenSpamStatus(contractAddress, true, chainNetwork);
       alert(`Token ${label} (${contractAddress.slice(0, 6)}...) added to Blacklist!`);
     } catch (error: any) {
       alert(error.response?.data?.error || "Failed to add to Blacklist");
@@ -1057,7 +1114,7 @@ export default function Dashboard() {
   };
 
   const formatCurrency = (val: number | undefined | null) => {
-    if (val === undefined || val === null || isNaN(val)) return '$0.00';
+    if (val === undefined || val === null || isNaN(val)) return 'N/A';
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
@@ -1117,7 +1174,8 @@ export default function Dashboard() {
     const memoryKey = `${walletAddress}-${chainNetwork}`;
     const tokens = walletTokens[memoryKey];
     if (!tokens) return null;
-    return tokens.filter(t => !t.is_spam).reduce((sum, token) => sum + (token.total_value_usd || 0), 0);
+    if (tokens.some(t => !t.is_spam && t.total_value_usd == null)) return null;
+    return tokens.filter(t => !t.is_spam).reduce((sum, token) => sum + (token.total_value_usd ?? 0), 0);
   };
 
   const handleSort = (key: string) => {
@@ -1523,14 +1581,14 @@ export default function Dashboard() {
                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3 bg-slate-50/70 p-3 rounded-xl border border-slate-100 flex-1 min-w-0 sm:divide-x sm:divide-slate-200/60">
                             {/* Net Worth */}
                             <div className="min-w-0 overflow-hidden sm:pr-2">
-                              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide truncate">Valid Net Worth</p>
+                              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide truncate">Estimated Portfolio Value</p>
                               <div className="mt-0.5 flex items-baseline gap-1.5 min-w-0">
                                 {isLoadingToken && netWorth === null ? (
                                   <span className="text-xs font-semibold text-blue-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Syncing...</span>
                                 ) : netWorth !== null ? (
                                   <span className="text-sm sm:text-base font-bold text-blue-600 truncate">{formatCurrency(netWorth)}</span>
                                 ) : (
-                                  <span className="text-xs text-slate-400 italic">Unscanned</span>
+                                  <span className="text-xs text-slate-400 italic">{tokens.length ? 'Valuation unavailable' : 'Unscanned'}</span>
                                 )}
                               </div>
                               <p className="text-[11px] text-slate-500 mt-0.5 truncate">Verified Holdings</p>
@@ -1663,7 +1721,7 @@ export default function Dashboard() {
                                           </div>
                                         </div>
                                         <div className="flex justify-between items-center text-[11px] text-slate-500 border-t border-slate-100 pt-2.5">
-                                          <span className="font-medium">Qty: {token.balance}</span>
+                                          <span className="font-medium">Qty: {token.balance ?? 'N/A'}</span>
                                           <span>{formatTokenPrice(token.price_usd)}</span>
                                         </div>
                                       </div>
@@ -1742,7 +1800,7 @@ export default function Dashboard() {
                                               </div>
                                             </div>
                                             <div className="flex justify-between items-center text-[10px] text-slate-500 border-t border-slate-100 pt-1.5 mt-1">
-                                              <span>Qty: {token.balance} {token.symbol}</span>
+                                              <span>Qty: {token.balance ?? 'N/A'} {token.symbol}</span>
                                               <span className="text-amber-700 font-medium">Unindexed Price</span>
                                             </div>
                                           </div>
@@ -2189,7 +2247,7 @@ export default function Dashboard() {
                             </a>
 
                             <button 
-                              onClick={() => handleRemoveTrack(coin.contract_address)} 
+                              onClick={() => handleRemoveTrack(coin)}
                               className="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold text-xs flex items-center gap-1.5 transition-colors border border-rose-200/60 shadow-2xs" 
                               title="Remove from Coin Tracker"
                             >
@@ -2382,7 +2440,7 @@ export default function Dashboard() {
                           </a>
 
                           <button 
-                            onClick={() => handleRemoveBlacklist(item.contract_address)} 
+                            onClick={() => handleRemoveBlacklist(item.contract_address, item.chain_network)}
                             className="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold text-xs flex items-center gap-1.5 transition-colors border border-rose-200/60 shadow-2xs"
                             title="Remove from Blacklist"
                           >
@@ -2471,7 +2529,7 @@ export default function Dashboard() {
                         <Wallet size={20} />
                       </div>
                       <div>
-                        <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Total Verified Net Worth</p>
+                        <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Estimated Portfolio Value</p>
                         <p className="text-2xl font-black text-slate-900 mt-0.5 tracking-tight font-mono">
                           {formatCurrency(myWalletNetWorth)}
                         </p>
@@ -2609,7 +2667,7 @@ export default function Dashboard() {
                               <div className="min-w-0 overflow-hidden sm:px-3">
                                 <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide truncate">Wallet Balance</p>
                                 <p className="text-xs sm:text-sm font-bold text-slate-900 mt-1 font-mono truncate">
-                                  {token.balance} <span className="text-xs text-slate-500 font-sans">{token.symbol}</span>
+                                  {token.balance ?? 'N/A'} <span className="text-xs text-slate-500 font-sans">{token.symbol}</span>
                                 </p>
                                 <p className="text-[11px] text-slate-500 mt-0.5 truncate">Holdings Quantity</p>
                               </div>
@@ -2638,7 +2696,7 @@ export default function Dashboard() {
                                   </button>
 
                                   <button 
-                                    onClick={() => handleQuickTrack(token.contract_address, token.name || token.symbol, connectedNetwork || 'solana')}
+                                    onClick={() => handleQuickTrack(token.contract_address, token.name || token.symbol, token.injected_chain || connectedNetwork || '')}
                                     className="px-3 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 font-semibold text-xs flex items-center gap-1.5 transition-colors border border-blue-200/60 shadow-2xs"
                                     title="Add to Coin Tracker"
                                   >
@@ -2647,7 +2705,7 @@ export default function Dashboard() {
                                   </button>
 
                                   <button 
-                                    onClick={() => handleQuickBlacklist(token.contract_address, token.name || token.symbol, connectedNetwork || 'solana')}
+                                    onClick={() => handleQuickBlacklist(token.contract_address, token.name || token.symbol, token.injected_chain || connectedNetwork || '')}
                                     className="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold text-xs flex items-center gap-1.5 transition-colors border border-rose-200/60 shadow-2xs"
                                     title="Add to Blacklist"
                                   >
@@ -2718,21 +2776,21 @@ export default function Dashboard() {
                                   </div>
                                 </div>
                                 <div className="flex justify-between items-center text-[10px] text-slate-500 border-t border-slate-100 pt-1.5 mt-1">
-                                  <span>Qty: {token.balance} {token.symbol}</span>
+                                  <span>Qty: {token.balance ?? 'N/A'} {token.symbol}</span>
                                   <span className="text-amber-700 font-medium">Unindexed Price</span>
                                 </div>
                               </div>
                               {token.contract_address !== 'NATIVE_COIN' && (
                                 <div className="flex items-center gap-1.5 pt-1.5 border-t border-slate-100 text-[10px] mt-2">
                                   <button 
-                                    onClick={() => handleQuickTrack(token.contract_address, token.name || token.symbol, connectedNetwork || 'solana')}
+                                    onClick={() => handleQuickTrack(token.contract_address, token.name || token.symbol, token.injected_chain || connectedNetwork || '')}
                                     className="flex-1 py-1 px-1.5 rounded-md bg-blue-50 hover:bg-blue-100 text-blue-700 font-semibold flex items-center justify-center gap-1 transition-colors border border-blue-200/60 shadow-2xs"
                                     title="Add to Coin Tracker"
                                   >
                                     <Activity size={10} /> + Track
                                   </button>
                                   <button 
-                                    onClick={() => handleQuickBlacklist(token.contract_address, token.name || token.symbol, connectedNetwork || 'solana')}
+                                    onClick={() => handleQuickBlacklist(token.contract_address, token.name || token.symbol, token.injected_chain || connectedNetwork || '')}
                                     className="flex-1 py-1 px-1.5 rounded-md bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold flex items-center justify-center gap-1 transition-colors border border-rose-200/60 shadow-2xs"
                                     title="Mark as Blacklist Spam"
                                   >
@@ -2792,14 +2850,14 @@ export default function Dashboard() {
                               {token.contract_address !== 'NATIVE_COIN' && (
                                 <div className="flex items-center gap-1.5 pt-1.5 border-t border-rose-50 text-[10px] mt-1.5">
                                   <button 
-                                    onClick={() => handleQuickTrack(token.contract_address, token.name || token.symbol, connectedNetwork || 'solana')}
+                                    onClick={() => handleQuickTrack(token.contract_address, token.name || token.symbol, token.injected_chain || connectedNetwork || '')}
                                     className="flex-1 py-1 px-1.5 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-medium flex items-center justify-center gap-1 transition-colors border border-emerald-100 shadow-2xs"
                                     title="Unblock & Add to Coin Tracker"
                                   >
                                     <Activity size={10} /> + Track
                                   </button>
                                   <button 
-                                    onClick={() => handleQuickBlacklist(token.contract_address, token.name || token.symbol, connectedNetwork || 'solana')}
+                                    onClick={() => handleQuickBlacklist(token.contract_address, token.name || token.symbol, token.injected_chain || connectedNetwork || '')}
                                     className="flex-1 py-1 px-1.5 rounded-md bg-rose-50 hover:bg-rose-100 text-rose-700 font-medium flex items-center justify-center gap-1 transition-colors border border-rose-100 shadow-2xs"
                                     title="Confirm Blacklist"
                                   >
@@ -3022,14 +3080,14 @@ export default function Dashboard() {
                             </div>
                           </td>
                           <td className="px-5 py-3 text-right font-semibold text-slate-800">
-                            {Number(holder.balance).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                            {holder.balance == null ? 'N/A' : Number(holder.balance).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                           </td>
                           <td className="px-5 py-3 text-right font-bold text-slate-900 font-sans">
-                            ${holder.value_usd ? holder.value_usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+                            {holder.value_usd == null ? 'N/A' : `$${holder.value_usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                           </td>
                           <td className="px-5 py-3 text-right font-sans">
                             <span className="bg-blue-50 text-blue-700 border border-blue-200/60 px-2 py-0.5 rounded font-bold text-xs">
-                              {holder.share}%
+                              {holder.share == null ? 'N/A' : `${holder.share}%`}
                             </span>
                           </td>
                           <td className="px-5 py-3 text-center font-sans">
@@ -3103,11 +3161,11 @@ export default function Dashboard() {
                         {telegramStatus?.botInfo?.first_name ? `${telegramStatus.botInfo.first_name} (@${telegramStatus.botInfo.username})` : 'Pelacak Radar Bot'}
                       </h4>
                       <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-200">
-                        {telegramStatus?.botOnline ? 'Online & Ready' : 'Connected'}
+                        {telegramStatus?.configured ? 'Configured — delivery unverified' : 'Not configured'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 font-mono mt-0.5">
-                      Target Chat ID: {telegramStatus?.targetChatId || 'Configured via .env'}
+                      Transport: {telegramStatus?.transport || 'Unknown'} — no automatic webhook registration
                     </p>
                   </div>
                 </div>
@@ -3143,10 +3201,10 @@ export default function Dashboard() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div className="p-3.5 rounded-xl border border-slate-200 bg-white shadow-2xs">
                     <div className="flex items-center gap-2 text-indigo-700 font-bold text-xs mb-1">
-                      <Wallet size={14} /> Whale Sniper Alert
+                      <Wallet size={14} /> Solana Movement Alerts
                     </div>
                     <p className="text-[11px] text-slate-500">
-                      Instantly alerts when tracked target wallets buy very new tokens (under 60m old).
+                      Swap evidence can classify BUY/SELL; other movements remain UNKNOWN. No token-age restriction.
                     </p>
                   </div>
 
@@ -3172,8 +3230,8 @@ export default function Dashboard() {
                         </button>
                       </div>
                       <p className="text-[11px] text-slate-500">
-                        Scans tracked coins for RSI extremes (&lt;30 or &gt;70) and 24h volume explosions. 
-                        <strong className="block mt-1 text-slate-600">Turn OFF to prioritize Vercel execution time for Whale Sniper.</strong>
+                        Uses completed hourly candles for RSI and volume relative to a 20-candle baseline.
+                        <strong className="block mt-1 text-slate-600">Requires the native bot worker and configured data providers.</strong>
                       </p>
                     </div>
                   </div>
@@ -3188,7 +3246,7 @@ export default function Dashboard() {
                 <div className="rounded-xl border border-slate-200 bg-slate-50 divide-y divide-slate-200/80 text-xs overflow-hidden">
                   <div className="p-2.5 flex items-center justify-between">
                     <code className="font-bold text-sky-700 bg-sky-100/80 px-2 py-0.5 rounded">/summary</code>
-                    <span className="text-slate-600 font-medium text-right">View portfolio net worth & tracking overview</span>
+                    <span className="text-slate-600 font-medium text-right">Native balance summary, not total portfolio net worth</span>
                   </div>
                   <div className="p-2.5 flex items-center justify-between">
                     <code className="font-bold text-sky-700 bg-sky-100/80 px-2 py-0.5 rounded">/watchlist</code>

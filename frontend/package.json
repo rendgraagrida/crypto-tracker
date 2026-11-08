@@ -6,8 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "bot": "node --no-warnings --experimental-strip-types --env-file-if-exists=.env.local scripts/bot.ts",
+    "trade:worker": "node --no-warnings --experimental-strip-types --env-file-if-exists=.env.trader.local scripts/trader.ts",
+    "paper:replay": "node --no-warnings --experimental-strip-types scripts/paper-replay.ts",
+    "typecheck": "next typegen && tsc --noEmit",
     "lint": "eslint",
-    "test": "node --no-warnings --experimental-strip-types --test test/utils.test.ts test/blockchain.test.ts test/indicators.test.ts test/blacklist.test.ts test/telegram.test.ts",
+    "test": "node --no-warnings --experimental-strip-types --test test/*.test.ts",
     "test:integration": "node --no-warnings --experimental-strip-types --test test/integration.test.ts",
     "test:all": "node --no-warnings --experimental-strip-types --test test/*.test.ts"
   },

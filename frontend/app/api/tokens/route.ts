@@ -1,66 +1,68 @@
 export const dynamic = 'force-dynamic';
-import { NextResponse } from 'next/server';
+import { POST as solanaPost } from '../solana/route.ts';
+import { fetchMarketPairs, fetchNativeCoinPrice } from '../../lib/market-data.ts';
+import { normalizeAddress, normalizeChain } from '../../lib/auth.ts';
+import { readBoundedJson } from '../../lib/bounded-json.ts';
+import { boundedFetch } from '../../lib/bounded-fetch.ts';
+import { formatTokenBalance } from '../../lib/token-balance.ts';
+const NextResponse = Response;
 import { createClient } from '@supabase/supabase-js';
 
 function getSupabase() {
   const url = process.env.SUPABASE_URL || '';
   const key = process.env.SUPABASE_KEY || '';
   if (!url || !key) return null;
-  return createClient(url, key);
+  return createClient(url, key, { global: { fetch: boundedFetch } });
 }
 
 const getAlchemyRpcUrl = (network: string) => {
-  const net = network.toUpperCase();
-  if (net === 'ROBINHOOD' || net.includes('ROBINHOOD') || net === 'RH') return process.env.ALCHEMY_ROBINHOOD_URL || '';
-  if (net === 'ETHEREUM' || net.includes('ETH')) return process.env.ALCHEMY_ETH_URL || '';
-  if (net === 'BASE CHAIN' || net.includes('BASE')) return process.env.ALCHEMY_BASE_URL || '';
-  if (net === 'BSC' || net.includes('BNB')) return process.env.ALCHEMY_BSC_URL || '';
-  return '';
+  const vars: Record<string, string> = { ethereum: 'ALCHEMY_ETH_URL', base: 'ALCHEMY_BASE_URL', bsc: 'ALCHEMY_BSC_URL', robinhood: 'ALCHEMY_ROBINHOOD_URL', polygon: 'ALCHEMY_POLYGON_URL', arbitrum: 'ALCHEMY_ARBITRUM_URL', optimism: 'ALCHEMY_OPTIMISM_URL', avalanche: 'ALCHEMY_AVALANCHE_URL' };
+  return process.env[vars[network]] || '';
 };
-
 const getNativeCoinInfo = (network: string) => {
-  const net = network.toUpperCase();
-  if (net === 'BSC' || net.includes('BNB')) return { id: 'binancecoin', symbol: 'BNB', name: 'BNB' };
-  if (net === 'ROBINHOOD' || net.includes('ROBINHOOD') || net === 'RH') return { id: 'ethereum', symbol: 'ETH', name: 'Ethereum (Robinhood)' };
-  return { id: 'ethereum', symbol: 'ETH', name: 'Ethereum' };
+  const info: Record<string, { id: string; symbol: string; name: string }> = {
+    ethereum: { id: 'ethereum', symbol: 'ETH', name: 'Ethereum' }, base: { id: 'ethereum', symbol: 'ETH', name: 'Ethereum' },
+    arbitrum: { id: 'ethereum', symbol: 'ETH', name: 'Ethereum' }, optimism: { id: 'ethereum', symbol: 'ETH', name: 'Ethereum' },
+    robinhood: { id: 'ethereum', symbol: 'ETH', name: 'Ethereum (Robinhood)' }, bsc: { id: 'binancecoin', symbol: 'BNB', name: 'BNB' },
+    polygon: { id: 'matic-network', symbol: 'POL', name: 'Polygon' }, avalanche: { id: 'avalanche-2', symbol: 'AVAX', name: 'Avalanche' },
+  };
+  return info[network];
 };
+type TokenMeta = { name?: string; symbol?: string; decimals?: number | string; logo?: string };
+const tokenMetadataCache = new Map<string, { expires: number; value: TokenMeta }>();
 
 // Helper untuk batch RPC calls
 async function rpcCall(url: string, method: string, params: any[]) {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    signal: AbortSignal.timeout(8000)
   });
   if (!res.ok) throw new Error(`RPC Error: ${res.status}`);
-  const json = await res.json();
+  const json = await readBoundedJson(res.body, 2_000_000, 8000) as { error?: { message: string }; result?: unknown };
   if (json.error) throw new Error(json.error.message);
   return json.result;
 }
 
 export async function POST(request: Request) {
   try {
-    const { wallet_address, chain_network, page = 1 } = await request.json();
+    const { wallet_address, chain_network, page = 1 } = await readBoundedJson(request.body, 16384, 5000) as { wallet_address: string; chain_network: string; page?: number };
     if (!wallet_address || !chain_network) {
       return NextResponse.json({ error: "Data dompet tidak lengkap" }, { status: 400 });
     }
 
-    const safeAddress = wallet_address.toString().trim();
-    const safeNet = chain_network.toUpperCase();
+    let chain: string;
+    let safeAddress: string;
+    try { chain = normalizeChain(chain_network); safeAddress = normalizeAddress(chain, wallet_address); }
+    catch { return NextResponse.json({ error: 'Alamat atau jaringan tidak valid' }, { status: 400 }); }
 
     // 🔴 Jika jaringan adalah SOLANA, forward ke handler Solana
-    if (safeNet === 'SOLANA') {
-      const solUrl = new URL('/api/solana', request.url);
-      const solRes = await fetch(solUrl.toString(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wallet_address: safeAddress, page })
-      });
-      const solData = await solRes.json();
-      return NextResponse.json(solData, { status: solRes.status });
+    if (chain === 'solana') {
+      return solanaPost(new Request(request.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ wallet_address: safeAddress, page }) }));
     }
 
-    const rpcUrl = getAlchemyRpcUrl(chain_network);
+    const rpcUrl = getAlchemyRpcUrl(chain);
     if (!rpcUrl) {
       return NextResponse.json({ error: `Jaringan EVM tidak didukung atau RPC URL belum disetel` }, { status: 400 });
     }
@@ -73,27 +75,16 @@ export async function POST(request: Request) {
       const supabase = getSupabase();
       if (supabase) {
         // Ambil tracked_coins DENGAN chain_network agar bisa filter per-chain
-        const [trackedRes, blacklistRes] = await Promise.all([
+        const [trackedRes, whitelistRes, blacklistRes] = await Promise.all([
           supabase.from('tracked_coins').select('contract_address, chain_network'),
-          supabase.from('blacklist_tokens').select('contract_address'),
+          supabase.from('whitelist_tokens').select('contract_address, chain_network'),
+          supabase.from('blacklist_tokens').select('contract_address, chain_network'),
         ]);
-        if (trackedRes.data && Array.isArray(trackedRes.data)) {
-          // Normalisasi chain_network agar bisa dicocokkan: 'bsc', 'BSC', 'Binance', 'Robinhood' match ke RPC masing-masing
-          const chainNorm = safeNet; // e.g. 'BSC', 'ETHEREUM', 'BASE CHAIN', 'ROBINHOOD'
-          VIP_TOKENS = trackedRes.data
-            .filter((item: any) => {
-              const itemChain = (item.chain_network || '').toUpperCase();
-              if (chainNorm.includes('BSC') || chainNorm.includes('BNB')) return itemChain.includes('BSC') || itemChain.includes('BNB');
-              if (chainNorm.includes('ROBINHOOD') || chainNorm.includes('RH')) return itemChain.includes('ROBINHOOD') || itemChain.includes('RH');
-              if (chainNorm.includes('ETH')) return itemChain.includes('ETH') && !itemChain.includes('BSC') && !itemChain.includes('ROBINHOOD');
-              if (chainNorm.includes('BASE')) return itemChain.includes('BASE');
-              return false;
-            })
-            .map((item: any) => item.contract_address?.toLowerCase() || "");
-        }
-        if (blacklistRes.data && Array.isArray(blacklistRes.data)) {
-          BLACKLISTED_TOKENS = blacklistRes.data.map((item: any) => item.contract_address?.toLowerCase() || "");
-        }
+        const matching = (rows: { contract_address: string; chain_network: string }[] | null) => (rows || []).flatMap(item => {
+          try { return normalizeChain(item.chain_network) === chain ? [normalizeAddress(chain, item.contract_address)] : []; } catch { return []; }
+        });
+        VIP_TOKENS = [...new Set([...matching(trackedRes.data), ...matching(whitelistRes.data)])];
+        BLACKLISTED_TOKENS = matching(blacklistRes.data);
       }
     } catch (err) {}
 
@@ -137,60 +128,55 @@ export async function POST(request: Request) {
     });
     const activeTokens = Array.from(uniqueTokensMap.values());
     
-    // 3. Ambil metadata untuk tiap token (Batching up to limits, or Promise.all if not too many)
-    const tokenMetadataMap: Record<string, any> = {};
-    const contractAddresses = activeTokens.map((t: any) => t.contractAddress);
-    
-    // For small number of tokens, we can use Promise.all. If huge, we might need chunks, but Alchemy limit is high.
-    // Let's do it in chunks of 50 just to be safe.
-    for (let i = 0; i < contractAddresses.length; i += 50) {
-      const chunk = contractAddresses.slice(i, i + 50);
-      await Promise.all(chunk.map(async (address: string) => {
-        try {
-          const metadata = await rpcCall(rpcUrl, 'alchemy_getTokenMetadata', [address]);
-          tokenMetadataMap[address.toLowerCase()] = metadata;
-        } catch (e) {
-          // ignore individual token metadata failures
+    // 3. Ambil metadata untuk tiap token (Cache + JSON-RPC Batch per 25 kontrak untuk menghindari N+1 HTTP POST)
+    const tokenMetadataMap: Record<string, TokenMeta> = {};
+    const contractAddresses = activeTokens.map((t: { contractAddress: string }) => t.contractAddress);
+    const uncachedAddresses: string[] = [];
+    for (const address of contractAddresses.slice(0, 1000)) {
+      const lower = address.toLowerCase();
+      const cached = tokenMetadataCache.get(`${chain}:${lower}`);
+      if (cached && cached.expires > Date.now()) {
+        tokenMetadataMap[lower] = cached.value;
+      } else {
+        uncachedAddresses.push(address);
+      }
+    }
+    for (let i = 0; i < uncachedAddresses.length; i += 25) {
+      const chunk = uncachedAddresses.slice(i, i + 25);
+      const batchBody = chunk.map((address, id) => ({ jsonrpc: '2.0', id, method: 'alchemy_getTokenMetadata', params: [address] }));
+      try {
+        const res = await fetch(rpcUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(batchBody),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (res.ok) {
+          const batchJson = await readBoundedJson(res.body, 2_000_000, 8000);
+          if (Array.isArray(batchJson)) {
+            for (const item of batchJson as Array<{ id?: number; result?: TokenMeta; error?: unknown }>) {
+              if (typeof item?.id === 'number' && chunk[item.id] && item.result && typeof item.result === 'object' && !item.error) {
+                const lower = chunk[item.id].toLowerCase();
+                const key = `${chain}:${lower}`;
+                tokenMetadataMap[lower] = item.result;
+                tokenMetadataCache.delete(key);
+                tokenMetadataCache.set(key, { expires: Date.now() + 300_000, value: item.result });
+                while (tokenMetadataCache.size > 3000) tokenMetadataCache.delete(tokenMetadataCache.keys().next().value!);
+              }
+            }
+          }
         }
-      }));
+      } catch { /* Metadata remains unknown. */ }
     }
 
     // 4. Ambil Harga Live USD dari DexScreener (Batch up to 30)
-    const KNOWN_EVM_STABLES: Record<string, { price_usd: number; logo: string | null }> = {
-      '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': { price_usd: 1.0, logo: 'https://static.alchemyapi.io/images/assets/3408.png' }, // USDC ETH
-      '0xdac17f958d2ee523a2206206994597c13d831ec7': { price_usd: 1.0, logo: 'https://static.alchemyapi.io/images/assets/825.png' },  // USDT ETH
-      '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d': { price_usd: 1.0, logo: 'https://static.alchemyapi.io/images/assets/3408.png' }, // USDC BSC
-      '0x55d398326f99059ff775485246999027b3197955': { price_usd: 1.0, logo: 'https://static.alchemyapi.io/images/assets/825.png' },  // USDT BSC
-      '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': { price_usd: 1.0, logo: 'https://static.alchemyapi.io/images/assets/3408.png' }, // USDC BASE
-    };
-    const KNOWN_EVM_SET = new Set(Object.keys(KNOWN_EVM_STABLES).map(k => k.toLowerCase()));
 
-    const dexMetaMap: Record<string, { price_usd: number, logo: string | null }> = {};
-    const validContractsForPricing = contractAddresses.filter(c => !KNOWN_EVM_SET.has(c.toLowerCase()));
-    
-    if (validContractsForPricing.length > 0) {
-      try {
-        for (let i = 0; i < validContractsForPricing.length; i += 30) {
-          const chunk = validContractsForPricing.slice(i, i + 30);
-          const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${chunk.join(",")}`, {
-            headers: { 'Accept': 'application/json' }
-          }).then(r => r.json()).catch(() => null);
-
-          if (dexRes?.pairs && Array.isArray(dexRes.pairs)) {
-            dexRes.pairs.forEach((p: any) => {
-              const addr = p.baseToken?.address?.toLowerCase();
-              if (addr && !dexMetaMap[addr]) {
-                dexMetaMap[addr] = {
-                  price_usd: parseFloat(p.priceUsd || "0") || 0,
-                  logo: p.info?.imageUrl || null
-                };
-              }
-            });
-          }
-        }
-      } catch (e) {
-        console.error("DexScreener API error:", e);
-      }
+    const dexMetaMap: Record<string, { price_usd: number | null, logo: string | null }> = {};
+    const validContractsForPricing = contractAddresses;
+    const pairs = await fetchMarketPairs(normalizeChain(chain_network), validContractsForPricing);
+    for (const [address, pair] of pairs) {
+      const price = pair.priceUsd === undefined ? null : Number(pair.priceUsd);
+      dexMetaMap[address] = { price_usd: price !== null && Number.isFinite(price) && price >= 0 ? price : null, logo: pair.info?.imageUrl || null };
     }
 
     // 5. Gabungkan dan format data (Format & Map Token dengan Bendera Karantina Spam + Blacklist)
@@ -199,23 +185,12 @@ export async function POST(request: Request) {
       const rawBalanceHex = t.tokenBalance;
       
       const meta = tokenMetadataMap[contract] || {};
-      const dexInfo = dexMetaMap[contract] || { price_usd: 0, logo: null };
-      const knownStable = KNOWN_EVM_STABLES[contract];
+      const dexInfo = dexMetaMap[contract] || { price_usd: null, logo: null };
       
-      const decimals = meta.decimals !== null && meta.decimals !== undefined ? parseInt(meta.decimals) : 18;
-      
-      let balanceFormatted = "0";
-      try {
-        const balanceBigInt = BigInt(rawBalanceHex);
-        const balanceNum = Number(balanceBigInt) / (10 ** decimals);
-        balanceFormatted = balanceNum.toFixed(6);
-      } catch(e) {
-        balanceFormatted = "0";
-      }
-      
-      const numBalance = parseFloat(balanceFormatted);
-      const priceUsd = knownStable ? knownStable.price_usd : dexInfo.price_usd;
-      const totalValueUsd = numBalance * priceUsd;
+      const { balance: balanceFormatted, numericBalance } = formatTokenBalance(rawBalanceHex, meta.decimals);
+      const priceUsd = dexInfo.price_usd;
+      const computedValue = priceUsd !== null && numericBalance !== null ? numericBalance * priceUsd : null;
+      const totalValueUsd = computedValue !== null && Number.isFinite(computedValue) && (computedValue !== 0 || priceUsd === 0 || numericBalance === 0) ? computedValue : null;
       const validLogo = (typeof dexInfo.logo === 'string' && dexInfo.logo.length > 5) || (typeof meta.logo === 'string' && meta.logo.length > 5);
 
       // 🚫 SPAM / QUARANTINE FILTER:
@@ -241,10 +216,10 @@ export async function POST(request: Request) {
         if (hasKeyword) {
           isSpam = true;
           spamReason = 'keyword';
-        } else if (!priceUsd || priceUsd <= 0 || !totalValueUsd || totalValueUsd <= 0) {
+        } else if (priceUsd !== null && totalValueUsd !== null && (priceUsd <= 0 || totalValueUsd <= 0)) {
           isSpam = true;
           spamReason = 'zero_value';
-        } else if (!validLogo && totalValueUsd < 0.01) {
+        } else if (!validLogo && totalValueUsd !== null && totalValueUsd < 0.01) {
           isSpam = true;
           spamReason = 'zero_value';
         }
@@ -256,6 +231,7 @@ export async function POST(request: Request) {
         symbol: meta.symbol || "???",
         logo: dexInfo.logo || meta.logo || null,
         balance: balanceFormatted,
+        raw_balance: rawBalanceHex,
         price_usd: priceUsd,
         total_value_usd: totalValueUsd,
         is_spam: isSpam,
@@ -265,20 +241,17 @@ export async function POST(request: Request) {
 
     // 6. Ambil Saldo Native Coin (ETH / BNB)
     let nativeBalanceNum = 0;
+    let nativeRawBalance: string | null = null;
     try {
       const nativeBalanceHex = await rpcCall(rpcUrl, 'eth_getBalance', [safeAddress, 'latest']);
-      nativeBalanceNum = Number(BigInt(nativeBalanceHex)) / 1e18;
-    } catch (err) {}
-
-    let nativePriceUsd = 0;
-    const nativeMeta = getNativeCoinInfo(chain_network);
-    try {
-      const cgRes = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${nativeMeta.id}&vs_currencies=usd`).catch(() => null);
-      if (cgRes && cgRes.ok) {
-        const cgData = await cgRes.json();
-        nativePriceUsd = cgData[nativeMeta.id]?.usd || 0;
+      if (typeof nativeBalanceHex === 'string' && /^0x[0-9a-f]+$/i.test(nativeBalanceHex)) {
+        nativeBalanceNum = Number(BigInt(nativeBalanceHex)) / 1e18;
+        nativeRawBalance = nativeBalanceHex;
       }
     } catch (err) {}
+
+    const nativeMeta = getNativeCoinInfo(chain);
+    const nativePriceUsd = nativeMeta ? await fetchNativeCoinPrice(nativeMeta.id) : null;
 
     if (nativeBalanceNum > 0 && page === 1) {
       formattedTokens.push({
@@ -287,8 +260,9 @@ export async function POST(request: Request) {
         symbol: nativeMeta.symbol,
         logo: null,
         balance: nativeBalanceNum.toFixed(4),
+        raw_balance: nativeRawBalance,
         price_usd: nativePriceUsd,
-        total_value_usd: nativeBalanceNum * nativePriceUsd,
+        total_value_usd: nativePriceUsd === null ? null : nativeBalanceNum * nativePriceUsd,
         is_spam: false,
         spam_reason: null
       });
@@ -298,7 +272,7 @@ export async function POST(request: Request) {
     formattedTokens.sort((a: any, b: any) => {
       if (a.is_spam && !b.is_spam) return 1;
       if (!a.is_spam && b.is_spam) return -1;
-      return b.total_value_usd - a.total_value_usd;
+      return (b.total_value_usd ?? 0) - (a.total_value_usd ?? 0);
     });
 
     return NextResponse.json({

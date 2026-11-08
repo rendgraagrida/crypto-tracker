@@ -1,12 +1,18 @@
 export const dynamic = 'force-dynamic';
-import { NextResponse } from 'next/server';
+import { normalizeAddress, normalizeChain } from '../../lib/auth.ts';
+import { fetchMarketPairs } from '../../lib/market-data.ts';
+import { deleteChainIdentities, resolveStoredIdentity } from '../../lib/identity.ts';
+import { readBoundedJson } from '../../lib/bounded-json.ts';
+import { boundedFetch } from '../../lib/bounded-fetch.ts';
+import type { DexPair } from '../../lib/market-data.ts';
+const NextResponse = Response;
 import { createClient } from '@supabase/supabase-js';
 
 function getSupabase() {
   const url = process.env.SUPABASE_URL || '';
   const key = process.env.SUPABASE_KEY || '';
   if (!url || !key) return null;
-  return createClient(url, key);
+  return createClient(url, key, { global: { fetch: boundedFetch } });
 }
 
 interface TrackedCoin {
@@ -18,79 +24,6 @@ interface TrackedCoin {
   is_primary?: boolean;
 }
 
-interface DexPair {
-  chainId: string;
-  baseToken: { address: string; name: string; symbol: string };
-  priceUsd?: string;
-  priceChange?: { h24?: number; h6?: number; h1?: number };
-  volume?: { h24?: number };
-  liquidity?: { usd?: number };
-  marketCap?: number;
-  fdv?: number;
-  pairAddress?: string;
-  url?: string;
-  info?: { imageUrl?: string };
-}
-
-async function fetchDexData(address: string): Promise<DexPair | null> {
-  try {
-    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`, {
-      headers: { Accept: 'application/json' },
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    const pairs: DexPair[] = json.pairs || [];
-    if (pairs.length === 0) return null;
-    return pairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
-  } catch {
-    return null;
-  }
-}
-
-async function fetchHoldersCount(address: string, chainNetwork?: string, chainId?: string): Promise<number | null> {
-  const chain = (chainNetwork || chainId || '').toLowerCase();
-  
-  if (chain.includes('sol')) {
-    try {
-      const res = await fetch(`https://api.rugcheck.xyz/v1/tokens/${address}/report`, {
-        headers: { 'Accept': 'application/json' },
-      });
-      if (res.ok) {
-        const json = await res.json();
-        if (typeof json.totalHolders === 'number') {
-          return json.totalHolders;
-        }
-      }
-    } catch {}
-    return null;
-  }
-
-  // EVM chains via Covalent
-  const covalentKey = process.env.COVALENT_API_KEY;
-  if (!covalentKey) return null;
-
-  let cId = 1;
-  if (chain.includes('bsc') || chain.includes('bnb')) cId = 56;
-  else if (chain.includes('base')) cId = 8453;
-  else if (chain.includes('robinhood') || chain.includes('rh')) cId = 4663;
-  else if (chain.includes('poly') || chain.includes('matic')) cId = 137;
-  else if (chain.includes('arb')) cId = 42161;
-  else if (chain.includes('opt')) cId = 10;
-
-  try {
-    const url = `https://api.covalenthq.com/v1/${cId}/tokens/${address}/token_holders_v2/?key=${covalentKey}`;
-    const res = await fetch(url, {
-      headers: { 'Accept': 'application/json' },
-    });
-    if (res.ok) {
-      const json = await res.json();
-      const count = json.data?.pagination?.total_count;
-      if (typeof count === 'number') return count;
-    }
-  } catch {}
-
-  return null;
-}
 
 export async function GET() {
   try {
@@ -105,10 +38,21 @@ export async function GET() {
 
     if (error || !data) return NextResponse.json([]);
 
-    const enriched = await Promise.all(
-      (data as TrackedCoin[]).map(async (coin) => {
-        const dex = await fetchDexData(coin.contract_address);
-        const totalHolders = await fetchHoldersCount(coin.contract_address, dex?.chainId || coin.chain_network);
+    const markets = new Map<string, Map<string, DexPair>>();
+    for (const coin of data as TrackedCoin[]) {
+      try {
+        const chain = normalizeChain(coin.chain_network);
+        if (!markets.has(chain)) {
+          const addresses = (data as TrackedCoin[]).filter(c => {
+            try { return normalizeChain(c.chain_network) === chain && !!normalizeAddress(chain, c.contract_address); } catch { return false; }
+          }).map(c => c.contract_address);
+          markets.set(chain, await fetchMarketPairs(chain, addresses));
+        }
+      } catch { /* Legacy unknown chain or address stays unenriched. */ }
+    }
+    const enriched = (data as TrackedCoin[]).map((coin) => {
+        let dex;
+        try { const chain = normalizeChain(coin.chain_network); dex = markets.get(chain)?.get(normalizeAddress(chain, coin.contract_address)); } catch {}
 
         return {
           id: coin.id,
@@ -129,11 +73,10 @@ export async function GET() {
           chain_id: dex?.chainId ?? coin.chain_network,
           dex_url: dex?.url ?? `https://dexscreener.com/search?q=${coin.contract_address}`,
           logo: dex?.info?.imageUrl ?? null,
-          total_holders: totalHolders,
+          total_holders: null,
           is_primary: coin.is_primary ?? false,
         };
-      })
-    );
+      });
 
     return NextResponse.json(enriched);
   } catch (err: any) {
@@ -146,16 +89,19 @@ export async function POST(request: Request) {
     const supabase = getSupabase();
     if (!supabase) return NextResponse.json({ error: 'Supabase belum terkonfigurasi' }, { status: 500 });
 
-    const body = await request.json();
+    const body = await readBoundedJson(request.body, 16384, 5000) as { contract_address: string; chain_network: string; label?: string };
     const { contract_address, chain_network, label } = body;
-    if (!contract_address) return NextResponse.json({ error: 'contract_address wajib diisi' }, { status: 400 });
-
-    const cleanAddress = contract_address.toString().trim();
-    const dex = await fetchDexData(cleanAddress);
+    if (!contract_address || !chain_network) return NextResponse.json({ error: 'contract_address dan chain_network wajib diisi' }, { status: 400 });
+    let cleanAddress: string;
+    let chain: string;
+    try { chain = normalizeChain(chain_network); cleanAddress = normalizeAddress(chain, contract_address); }
+    catch { return NextResponse.json({ error: 'Alamat atau jaringan tidak valid' }, { status: 400 }); }
+    if (await resolveStoredIdentity(supabase, 'tracked_coins', 'contract_address', chain, cleanAddress)) return NextResponse.json({ error: 'Token sudah ditambahkan ke Track Coin' }, { status: 409 });
+    const dex = (await fetchMarketPairs(chain, [cleanAddress])).get(cleanAddress);
 
     const { data, error } = await supabase.from('tracked_coins').insert([{
       contract_address: cleanAddress,
-      chain_network: chain_network || dex?.chainId || 'Unknown',
+      chain_network: chain,
       label: label || dex?.baseToken?.name || cleanAddress.slice(0, 8),
     }]).select().single();
 
@@ -170,8 +116,8 @@ export async function POST(request: Request) {
       success: true,
       data,
       preview: dex ? {
-        name: dex.baseToken.name,
-        symbol: dex.baseToken.symbol,
+        name: dex.baseToken?.name,
+        symbol: dex.baseToken?.symbol,
         price_usd: dex.priceUsd ? parseFloat(dex.priceUsd) : null,
         chain_id: dex.chainId,
       } : null,
@@ -186,20 +132,24 @@ export async function DELETE(request: Request) {
     const supabase = getSupabase();
     if (!supabase) return NextResponse.json({ error: 'Supabase belum terkonfigurasi' }, { status: 500 });
 
-    const { contract_address, deleteAll } = await request.json();
+    const { contract_address, chain_network, deleteAll } = await readBoundedJson(request.body, 16384, 5000) as { contract_address: string; chain_network: string; deleteAll?: boolean };
     
-    if (deleteAll) {
-      const { error } = await supabase.from('tracked_coins').delete().neq('contract_address', '');
-      if (error) throw error;
-      return NextResponse.json({ success: true });
+    if (deleteAll !== undefined && typeof deleteAll !== 'boolean') return NextResponse.json({ error: 'deleteAll harus boolean' }, { status: 400 });
+    if (deleteAll === true) {
+      if (typeof chain_network !== 'string') return NextResponse.json({ error: 'Pilih jaringan' }, { status: 400 });
+      try { normalizeChain(chain_network); } catch { return NextResponse.json({ error: 'Pilih jaringan yang valid' }, { status: 400 }); }
+      const result = await deleteChainIdentities(supabase, 'tracked_coins', 'contract_address', chain_network);
+      if (result.error) return NextResponse.json({ error: result.error, deleted: result.deleted }, { status: 409 });
+      if (!result.deleted) return NextResponse.json({ error: 'Tidak ada token pada jaringan terpilih' }, { status: 404 });
+      return NextResponse.json({ success: true, deleted: result.deleted });
     }
-
-    const { error } = await supabase
-      .from('tracked_coins')
-      .delete()
-      .eq('contract_address', contract_address.toString().trim());
+    if (!contract_address || !chain_network) return NextResponse.json({ error: 'Pilih alamat dan jaringan' }, { status: 400 });
+    const stored = await resolveStoredIdentity(supabase, 'tracked_coins', 'contract_address', chain_network, contract_address);
+    if (!stored) return NextResponse.json({ error: 'Token tidak ditemukan' }, { status: 404 });
+    const { data, error } = await supabase.from('tracked_coins').delete().eq('contract_address', stored.address).eq('chain_network', stored.chain).select('contract_address');
 
     if (error) throw error;
+    if (data?.length !== 1) return NextResponse.json({ error: 'Token berubah atau ambigu' }, { status: 409 });
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 200 });
@@ -214,20 +164,21 @@ export async function PATCH(request: Request) {
     const supabase = getSupabase();
     if (!supabase) return NextResponse.json({ error: 'Supabase belum terkonfigurasi' }, { status: 500 });
 
-    const { contract_address, is_primary } = await request.json();
-    if (!contract_address) return NextResponse.json({ error: 'contract_address wajib diisi' }, { status: 400 });
-
-    const cleanAddress = contract_address.toString().trim();
+    const { contract_address, chain_network, is_primary, label } = await readBoundedJson(request.body, 16384, 5000) as { contract_address: string; chain_network: string; is_primary?: boolean; label?: string };
+    if (!contract_address || !chain_network || (is_primary === undefined && typeof label !== 'string')) return NextResponse.json({ error: 'Pilih alamat, jaringan dan perubahan' }, { status: 400 });
+    const stored = await resolveStoredIdentity(supabase, 'tracked_coins', 'contract_address', chain_network, contract_address);
+    if (!stored) return NextResponse.json({ error: 'Token tidak ditemukan' }, { status: 404 });
+    const cleanAddress = stored.address;
 
     // Enforce max 5 primary coins
     if (is_primary === true) {
       const { data: existing } = await supabase
         .from('tracked_coins')
-        .select('contract_address')
+        .select('contract_address, chain_network')
         .eq('is_primary', true);
 
       const currentPrimary = (existing || []).filter(
-        (c: any) => c.contract_address.toLowerCase() !== cleanAddress.toLowerCase()
+        (c: { contract_address: string; chain_network: string }) => c.contract_address !== cleanAddress || c.chain_network !== stored.chain
       );
 
       if (currentPrimary.length >= 5) {
@@ -238,12 +189,14 @@ export async function PATCH(request: Request) {
       }
     }
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('tracked_coins')
-      .update({ is_primary: is_primary === true })
-      .eq('contract_address', cleanAddress);
+      .update({ ...(is_primary !== undefined ? { is_primary: is_primary === true } : {}), ...(typeof label === 'string' ? { label: label.trim() } : {}) })
+      .eq('contract_address', cleanAddress)
+      .eq('chain_network', stored.chain).select('contract_address');
 
     if (error) throw error;
+    if (data?.length !== 1) return NextResponse.json({ error: 'Token berubah atau ambigu' }, { status: 409 });
     return NextResponse.json({ success: true, is_primary: is_primary === true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

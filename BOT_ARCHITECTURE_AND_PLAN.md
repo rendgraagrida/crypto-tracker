@@ -1,5 +1,8 @@
 # 🤖 Analisis Mendalam, Audit Kode, & Master Plan Transformasi Crypto Tracker Bot
 
+> **Status: rancangan awal, bukan spesifikasi implementasi final.** Evaluasi ulang khusus bot ada di [BOT_WORKFLOW.md](./BOT_WORKFLOW.md); standar kerja lintas proyek berada di `D:/DEVELOPMENT/general/WORKFLOW_7_LEVELS.md`. Keduanya menggantikan rekomendasi yang bertentangan di bawah. Klaim timeout Vercel selalu 10 detik, runtime Cloudflare tanpa batas, RPC publik tanpa kuota, latensi/penghematan tertentu, serta scanner “100% mati” tidak boleh dianggap hasil pengujian. Skema database dan deployment production belum diverifikasi langsung. Alert otomatis bukan bukti multi-agent AI atau self-healing. Jangan menghapus UI/API sebelum kesetaraan fitur bot dibuktikan; rotasi kredensial terekspos tetap diperlukan.
+
+
 Dokumen ini berisi hasil audit menyeluruh terhadap kode sumber `crypto-tracker` saat ini, evaluasi kelayakan fungsi, daftar bug tersembunyi yang ditemukan, rekomendasi upgrade teknologi (**Vercel + Next.js $\rightarrow$ Cloudflare Workers + D1 + Helius Webhook**), serta rencana implementasi bertahap.
 
 ---
@@ -17,7 +20,7 @@ Secara konsep dasar, bot yang ada di `frontend/app/api/tele-bot/route.ts` sudah 
 | **3** | `tele-bot/route.ts` (Baris 431–433) | **Bug Double Dollar (`$$`) pada `/search`:** Fungsi `formatCompact()` sudah menambahkan simbol `$`, tetapi template pesan menambahkan `$` lagi (`$${mcap}`), menghasilkan tampilan `$$1.2M`. | Tampilan angka Market Cap, Liquidity, dan Volume di Telegram menjadi cacat (`$$`). |
 | **4** | `tele-bot/route.ts` (Baris 520–545) | **N+1 Query Waterfall di Scanner:** Di dalam loop dompet $\rightarrow$ loop 10 transaksi $\rightarrow$ loop token transfer, bot memanggil Supabase `alert_logs` dan DexScreener satu per satu secara sekuensial. | Jika memantau $>5$ dompet, waktu eksekusi tembus $>10$ detik dan langsung terkena **Timeout Error** di Vercel. |
 | **5** | `tele-bot/route.ts` (Baris 246–253) | **Tanpa Otorisasi Pengguna (Open Bot):** Bot membalas perintah dari `fromChatId` mana saja tanpa memfilter ID Telegram pemilik. | Orang asing yang tahu username bot Anda bisa melihat daftar dompet Anda dan menghabiskan kuota API Anda. |
-| **6** | `history/route.ts` (Baris 143) | **Hardcoded Alchemy API Key:** Terdapat fallback key `'alch_N9FL-z41qp-r45WkzqTfZ'` di kode sumber publik. | Kunci API terekspos di GitHub publik dan rawan disalahgunakan pihak luar. |
+| **6** | `history/route.ts` (historis) | **Fallback credential provider di source:** implementasi sebelumnya menyimpan key di source. Nilainya sengaja tidak disalin di dokumen. | Menghapus fallback tidak membatalkan key yang pernah terekspos; pemilik tetap perlu merotasi/nonaktifkannya pada provider. |
 
 ---
 

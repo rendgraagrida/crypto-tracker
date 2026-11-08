@@ -1,20 +1,12 @@
 services:
   frontend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: frontend/Dockerfile
     container_name: crypto_tracker_frontend
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     env_file:
       - ./frontend/.env.local
     restart: always
 
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: crypto_tracker_backend
-    env_file:
-      - ./backend/.env
-    restart: always

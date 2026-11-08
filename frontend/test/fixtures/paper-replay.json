@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "synthetic": true,
+  "holdoutStart": "2026-01-02T00:00:00.000Z",
+  "asOf": "2026-01-04T00:00:00.000Z",
+  "toleranceMs": 60000,
+  "entries": [
+    {
+      "split": "train",
+      "open": {
+        "signalId": "synthetic-train", "actor": {"userId":"fixture","chatId":"fixture"}, "chain":"solana", "token":"TRAIN", "entryAt":"2026-01-01T00:00:00.000Z",
+        "entryPriceUsd":"1", "notionalUsd":"100", "entryFeeUsd":"1", "exitFeeUsd":"1", "entrySlippageBps":100, "exitSlippageBps":100,
+        "hermes":{"status":"ok","findingIds":[]},
+        "analysis":{"chain":"solana","address":"TRAIN","fetchedAt":"2026-01-01T00:00:00.000Z","sources":{},"market":{"priceUsd":1,"marketCap":10000,"fdv":null,"liquidityUsd":1000,"volume24h":null,"buys24h":null,"sells24h":null,"pairAddress":null,"dex":null,"poolCreatedAt":null,"liquidityToMarketCap":0.1},"supply":{"raw":null,"decimals":null,"normalized":null},"holderCounts":{"rugcheck":null,"jupiter":null,"goplus":null,"conflict":false},"holders":{"observed":0,"observedPercent":null,"top1":null,"top5":null,"top10":null,"wallets":[],"coverage":"unknown"},"networks":[],"organic":{"score":null,"label":null,"buyRatio":null,"devMints":null,"devMigrations":null},"audit":{"mintAuthority":null,"freezeAuthority":null,"token2022":null,"transferFee":null,"evm":{},"primaryLpLockClaimPercent":null},"scenarios":{"topHolderDropPercent":null,"largestNetworkDropPercent":null,"assumptions":"unknown"},"risk":"UNKNOWN","findings":[],"tradeGuardrail":{"status":"WARN","blockedReasons":[],"warnings":[]},"mapUrl":""}
+      },
+      "observations": {}
+    },
+    {
+      "split": "holdout",
+      "open": {
+        "signalId": "synthetic-holdout", "actor": {"userId":"fixture","chatId":"fixture"}, "chain":"solana", "token":"HOLDOUT", "entryAt":"2026-01-02T00:00:00.000Z",
+        "entryPriceUsd":"1", "notionalUsd":"100", "entryFeeUsd":"1", "exitFeeUsd":"1", "entrySlippageBps":100, "exitSlippageBps":100,
+        "hermes":{"status":"ok","findingIds":["liquidity_ratio"]},
+        "analysis":{"chain":"solana","address":"HOLDOUT","fetchedAt":"2026-01-02T00:00:00.000Z","sources":{},"market":{"priceUsd":1,"marketCap":10000,"fdv":null,"liquidityUsd":1000,"volume24h":null,"buys24h":null,"sells24h":null,"pairAddress":null,"dex":null,"poolCreatedAt":null,"liquidityToMarketCap":0.1},"supply":{"raw":null,"decimals":null,"normalized":null},"holderCounts":{"rugcheck":null,"jupiter":null,"goplus":null,"conflict":false},"holders":{"observed":0,"observedPercent":null,"top1":null,"top5":null,"top10":null,"wallets":[],"coverage":"unknown"},"networks":[],"organic":{"score":null,"label":null,"buyRatio":null,"devMints":null,"devMigrations":null},"audit":{"mintAuthority":null,"freezeAuthority":null,"token2022":null,"transferFee":null,"evm":{},"primaryLpLockClaimPercent":null},"scenarios":{"topHolderDropPercent":null,"largestNetworkDropPercent":null,"assumptions":"unknown"},"risk":"UNKNOWN","findings":[],"tradeGuardrail":{"status":"WARN","blockedReasons":[],"warnings":[]},"mapUrl":""}
+      },
+      "observations": {"1h":{"observedAt":"2026-01-02T01:00:00.000Z","priceUsd":"2","liquidityUsd":"1000","source":"synthetic"},"6h":null,"24h":{"observedAt":"2026-01-03T00:05:00.000Z","priceUsd":"3","liquidityUsd":"1000","source":"synthetic"}}
+    }
+  ]
+}

@@ -1,5 +1,7 @@
-import { NextResponse } from 'next/server';
-import { getNetworkSlug } from '@/app/lib/utils';
+import { getNetworkSlug } from '../../lib/utils.ts';
+import { normalizeAddress, normalizeChain } from '../../lib/auth.ts';
+import { readBoundedJson } from '../../lib/bounded-json.ts';
+const NextResponse = Response;
 
 export const dynamic = 'force-dynamic';
 
@@ -12,17 +14,20 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Missing contract_address or chain_network parameters' }, { status: 400 });
   }
 
-  const networkSlug = getNetworkSlug(chain_network);
-  const cleanAddress = chain_network.toLowerCase() === 'solana' 
-    ? contract_address.trim() 
-    : contract_address.trim().toLowerCase();
+  let networkSlug: string;
+  let cleanAddress: string;
+  try {
+    const chain = normalizeChain(chain_network);
+    networkSlug = getNetworkSlug(chain);
+    cleanAddress = normalizeAddress(chain, contract_address);
+  } catch { return NextResponse.json({ error: 'Invalid chain or address' }, { status: 400 }); }
 
   try {
     // 1. Fetch the Top Pool for this Token on GeckoTerminal
     const poolUrl = `https://api.geckoterminal.com/api/v2/networks/${networkSlug}/tokens/${cleanAddress}/pools?page=1`;
     const poolRes = await fetch(poolUrl, {
       headers: { 'Accept': 'application/json' },
-      next: { revalidate: 30 } // Cache 30s
+      signal: AbortSignal.timeout(8000)
     });
 
     if (!poolRes.ok) {
@@ -34,7 +39,7 @@ export async function GET(request: Request) {
       }, { status: 200 });
     }
 
-    const poolJson = await poolRes.json();
+    const poolJson = await readBoundedJson(poolRes.body, 1_000_000, 8000) as { data?: Array<{ attributes: { address: string; name?: string; fdv_usd?: string; market_cap_usd?: string } }> };
     const pools = poolJson.data;
 
     if (!pools || pools.length === 0) {
@@ -54,7 +59,7 @@ export async function GET(request: Request) {
     const tradesUrl = `https://api.geckoterminal.com/api/v2/networks/${networkSlug}/pools/${poolAddress}/trades`;
     const tradesRes = await fetch(tradesUrl, {
       headers: { 'Accept': 'application/json' },
-      next: { revalidate: 15 } // Cache 15s
+      signal: AbortSignal.timeout(8000)
     });
 
     if (!tradesRes.ok) {
@@ -66,7 +71,7 @@ export async function GET(request: Request) {
       }, { status: 200 });
     }
 
-    const tradesJson = await tradesRes.json();
+    const tradesJson = await readBoundedJson(tradesRes.body, 2_000_000, 8000) as { data?: unknown[] };
     const rawTrades = tradesJson.data || [];
 
     let totalBuyVolumeUsd = 0;
