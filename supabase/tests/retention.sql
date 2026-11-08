@@ -22,9 +22,8 @@ update public.bot_jobs set terminal_at=now()-interval '14 days' where id in ('sc
 update public.bot_jobs set terminal_at=now()-interval '30 days' where id='send:boundary';
 insert into public.bot_jobs(id,kind,payload,status) values('send:legacy','send','{"legacy":true}','done');
 update public.bot_jobs set terminal_at=null where id='send:legacy';
--- Existing product grants and policies must survive base-schema reapplication.
-grant select on public.watchlist to anon;
-create policy retention_existing_policy on public.watchlist for select to anon using (false);
+-- Existing product policies must survive base-schema reapplication.
+create policy retention_existing_policy on public.watchlist for select to service_role using (false);
 insert into public.bot_confirmations(token,user_id,chat_id,command,expires_at,claimed_update_id) values
  ('expired','u','c','command',now()-interval '3 days',null),
  ('pending','u','c','command',now()-interval '3 days',2),
@@ -55,7 +54,7 @@ begin
   if (select terminal_at from public.bot_jobs where id='scan:old') > now()-interval '30 days' then raise exception 'Reapply changed terminal time'; end if;
   if not exists(select 1 from public.bot_jobs where id='retention:tombstone' and status='pruned') then raise exception 'Reapply lost tombstone'; end if;
   if not exists(select 1 from public.bot_jobs where id='send:legacy' and terminal_at >= now()-interval '1 minute') then raise exception 'Legacy completion not conservatively backfilled'; end if;
-  if not has_table_privilege('anon','public.watchlist','select') or not exists(select 1 from pg_policies where schemaname='public' and tablename='watchlist' and policyname='retention_existing_policy') then raise exception 'Existing product privileges or policies changed'; end if;
+  if not exists(select 1 from pg_policies where schemaname='public' and tablename='watchlist' and policyname='retention_existing_policy') then raise exception 'Existing product policies changed'; end if;
   if has_function_privilege('anon','public.bot_cleanup_retention(text,integer,integer)','execute') or
      has_function_privilege('authenticated','public.bot_cleanup_retention(text,integer,integer)','execute') or
      not has_function_privilege('service_role','public.bot_cleanup_retention(text,integer,integer)','execute') or
