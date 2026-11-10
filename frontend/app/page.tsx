@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, Fragment, useRef } from 'react';
+import React, { useState, useEffect, Fragment, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { 
   LayoutGrid, ShieldCheck, Plus, X, ChevronDown, ChevronUp, 
@@ -89,6 +89,9 @@ export default function Dashboard() {
 
   const [wallets, setWallets] = useState<WalletItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [watchlistError, setWatchlistError] = useState(false);
+  const [hasWatchlistData, setHasWatchlistData] = useState(false);
+  const watchlistRequest = useRef(0);
   
   const [walletPage, setWalletPage] = useState(1);
   const WALLET_PAGE_SIZE = 10;
@@ -153,6 +156,11 @@ export default function Dashboard() {
   const [myWalletNetWorth, setMyWalletNetWorth] = useState<number | null>(null);
 
   const [isHoldersModalOpen, setIsHoldersModalOpen] = useState(false);
+  const holdersDialogRef = useRef<HTMLDialogElement | null>(null);
+  const setHoldersDialog = useCallback((dialog: HTMLDialogElement | null) => {
+    holdersDialogRef.current = dialog;
+    if (dialog && !dialog.open) dialog.showModal();
+  }, []);
   const [selectedCoinHolders, setSelectedCoinHolders] = useState<any[]>([]);
   const [isFetchingHolders, setIsFetchingHolders] = useState(false);
   const [holdersCoinName, setHoldersCoinName] = useState('');
@@ -173,7 +181,10 @@ export default function Dashboard() {
     try {
       const res = await axios.get('/api/tele-bot');
       setTelegramStatus(res.data);
-      
+    } catch (err) {
+      setTelegramStatus(null);
+    }
+    try {
       const settingsRes = await axios.get('/api/settings');
       setIsCoinScannerEnabled(settingsRes.data.ENABLE_COIN_SCANNER === 'true');
     } catch (err) {}
@@ -247,14 +258,20 @@ export default function Dashboard() {
   const [isBlSubmitting, setIsBlSubmitting] = useState(false);
 
   const fetchWatchlist = async () => {
+    const request = ++watchlistRequest.current;
     try {
       setLoading(true);
       const response = await axios.get('/api/watchlist');
+      if (request !== watchlistRequest.current) return;
       setWallets(response.data);
+      setHasWatchlistData(true);
+      setWatchlistError(false);
     } catch (error) {
+      if (request !== watchlistRequest.current) return;
+      setWatchlistError(true);
       console.error("Gagal mengambil data watchlist:", error);
     } finally {
-      setLoading(false);
+      if (request === watchlistRequest.current) setLoading(false);
     }
   };
 
@@ -750,7 +767,8 @@ export default function Dashboard() {
       setSelectedCoinHolders(res.data.holders || []);
     } catch (err: any) {
       alert(err.response?.data?.error || 'Failed to fetch Top Token Holders');
-      setIsHoldersModalOpen(false);
+      if (holdersDialogRef.current) holdersDialogRef.current.close();
+      else setIsHoldersModalOpen(false);
     } finally {
       setIsFetchingHolders(false);
     }
@@ -1207,7 +1225,7 @@ export default function Dashboard() {
       
       <header className="bg-white/90 backdrop-blur-md border-b border-slate-200/80 sticky top-0 z-40 transition-all shadow-2xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
+          <div className="flex flex-col xl:flex-row xl:justify-between xl:items-center gap-3 py-3">
             
             {/* Brand Logo & Intelligence Tag */}
             <div className="flex items-center gap-3 shrink-0">
@@ -1227,8 +1245,8 @@ export default function Dashboard() {
             </div>
 
             {/* Navigation Tabs & Connect Button */}
-            <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-              <div className="flex items-center gap-1 bg-slate-100/80 p-1 rounded-xl border border-slate-200/80 overflow-x-auto">
+            <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3 min-w-0 xl:flex-nowrap">
+              <div className="order-last xl:order-none w-full xl:w-auto min-w-0 flex items-center gap-1 bg-slate-100/80 p-1 rounded-xl border border-slate-200/80 overflow-x-auto">
                 <button 
                   onClick={() => handleTabChange('my_wallet')} 
                   className={`px-2.5 sm:px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
@@ -1275,10 +1293,11 @@ export default function Dashboard() {
                 onClick={() => setIsTelegramModalOpen(true)}
                 className="px-3 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 border shadow-2xs bg-sky-50 border-sky-200/70 text-sky-700 hover:bg-sky-100/80 cursor-pointer"
                 title="Telegram Real-Time Alerts & Radar Controls"
+                aria-label={`Telegram Alerts: ${telegramStatus?.configured === true ? 'Configured — delivery unverified' : telegramStatus?.configured === false ? 'Not configured' : 'Status unavailable'}`}
               >
                 <Send size={13} className="text-sky-600" />
-                <span className="hidden sm:inline">Telegram Alerts</span>
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>Telegram Alerts</span>
+                <span className="sr-only">: {telegramStatus?.configured === true ? 'Configured — delivery unverified' : telegramStatus?.configured === false ? 'Not configured' : 'Status unavailable'}</span>
               </button>
 
               {/* CONNECT WALLET BUTTON */}
@@ -1341,7 +1360,7 @@ export default function Dashboard() {
                     Wallet Tracker
                   </h2>
                   <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-700 border border-blue-200/60">
-                    {wallets.length} tracked
+                    {!hasWatchlistData ? (loading ? 'Loading' : 'Unavailable') : `${wallets.length} tracked${watchlistError || loading ? ' (cached)' : ''}`}
                   </span>
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5">
@@ -1404,6 +1423,15 @@ export default function Dashboard() {
               </div>
             </div>
 
+            {watchlistError && (
+              <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <p>{hasWatchlistData ? 'Could not refresh the watchlist. Showing cached data, which may be stale.' : 'Watchlist unavailable. Could not load target wallets.'}</p>
+                <button type="button" onClick={fetchWatchlist} disabled={loading} className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold disabled:opacity-50">
+                  {loading ? 'Retrying…' : 'Retry'}
+                </button>
+              </div>
+            )}
+
             {/* Quick Add Target Bar (Inline) */}
             <div className="bg-white rounded-xl shadow-xs border border-slate-200/90 p-4">
               <form onSubmit={handleAddWallet} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
@@ -1458,12 +1486,12 @@ export default function Dashboard() {
 
             {/* Horizontal Target Wallets Cards List */}
             <div className="w-full">
-              {loading ? (
+              {loading && !hasWatchlistData ? (
                 <div className="flex flex-col items-center justify-center py-20 bg-white rounded-xl shadow-xs border border-slate-200">
                   <Loader2 size={32} className="animate-spin text-blue-600 mb-4" />
                   <p className="text-slate-500 font-medium text-sm">Loading target wallet database records...</p>
                 </div>
-              ) : sortedWallets.length === 0 ? (
+              ) : !hasWatchlistData ? null : sortedWallets.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-20 bg-white rounded-xl shadow-xs border border-slate-200 border-dashed">
                   <div className="bg-blue-50 p-4 rounded-full mb-4"><LayoutGrid size={32} className="text-blue-500" /></div>
                   <h3 className="text-lg font-bold text-slate-800">No target wallets found</h3>
@@ -2210,8 +2238,8 @@ export default function Dashboard() {
                             <div className="min-w-0 overflow-hidden sm:pl-3">
                               <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide truncate">RSI / MACD</p>
                               <p className="text-xs font-bold text-slate-800 mt-1 font-mono truncate">
-                                RSI: <span className={rsiVal ? (rsiVal > 70 ? 'text-rose-600 font-bold' : rsiVal < 30 ? 'text-emerald-600 font-bold' : 'text-slate-900') : 'text-slate-400 font-normal'}>
-                                  {rsiVal ? rsiVal.toFixed(1) : '—'}
+                                RSI: <span className={rsiVal != null ? (rsiVal > 70 ? 'text-rose-600 font-bold' : rsiVal < 30 ? 'text-emerald-600 font-bold' : 'text-slate-900') : 'text-slate-400 font-normal'}>
+                                  {rsiVal != null ? rsiVal.toFixed(1) : '—'}
                                 </span>
                               </p>
                               <p className="text-[10px] sm:text-[11px] font-semibold text-slate-600 mt-0.5 font-mono truncate">
@@ -3011,11 +3039,16 @@ export default function Dashboard() {
 
       {/* MODAL TOP HOLDERS */}
       {isHoldersModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-4 z-50 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col">
+        <dialog
+          ref={setHoldersDialog}
+          onClose={() => setIsHoldersModalOpen(false)}
+          aria-labelledby="holders-dialog-title"
+          className="m-auto w-[calc(100%-2rem)] max-w-3xl max-h-[85vh] overflow-hidden rounded-2xl border border-slate-200 bg-white p-0 shadow-2xl backdrop:bg-slate-900/60"
+        >
+          <div className="max-h-[85vh] flex flex-col">
             <div className="flex justify-between items-center px-6 py-4 border-b border-slate-100 bg-slate-50/80">
               <div>
-                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                <h3 id="holders-dialog-title" className="text-base font-bold text-slate-900 flex items-center gap-2">
                   <Users size={18} className="text-emerald-600" /> Top Token Holders (Whales)
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5 font-mono">
@@ -3024,14 +3057,16 @@ export default function Dashboard() {
                 </p>
               </div>
               <button 
-                onClick={() => setIsHoldersModalOpen(false)} 
+                onClick={() => holdersDialogRef.current?.close()}
+                aria-label="Close holders dialog"
+                autoFocus
                 className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
               >
                 <X size={18} />
               </button>
             </div>
             
-            <div className="overflow-y-auto flex-1 p-0">
+            <div className="overflow-auto flex-1 p-0">
               {isFetchingHolders ? (
                 <div className="flex flex-col items-center justify-center py-20 text-slate-500 gap-3">
                   <Loader2 size={32} className="animate-spin text-emerald-500" />
@@ -3117,7 +3152,7 @@ export default function Dashboard() {
               )}
             </div>
           </div>
-        </div>
+        </dialog>
       )}
 
       {/* MODAL TELEGRAM BOT & REAL-TIME ALERTS */}
@@ -3154,14 +3189,14 @@ export default function Dashboard() {
               {/* Bot Connection Status Banner */}
               <div className="p-4 rounded-xl border border-sky-100 bg-sky-50/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                 <div className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse shrink-0"></div>
+                  <div className="w-3 h-3 rounded-full bg-slate-400 shrink-0" aria-hidden="true"></div>
                   <div>
                     <div className="flex items-center gap-2">
                       <h4 className="text-sm font-bold text-slate-900">
                         {telegramStatus?.botInfo?.first_name ? `${telegramStatus.botInfo.first_name} (@${telegramStatus.botInfo.username})` : 'Pelacak Radar Bot'}
                       </h4>
-                      <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-200">
-                        {telegramStatus?.configured ? 'Configured — delivery unverified' : 'Not configured'}
+                      <span className="bg-slate-100 text-slate-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-slate-200">
+                        {telegramStatus?.configured === true ? 'Configured — delivery unverified' : telegramStatus?.configured === false ? 'Not configured' : 'Status unavailable'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-500 font-mono mt-0.5">
