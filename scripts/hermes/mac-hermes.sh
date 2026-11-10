@@ -6,19 +6,29 @@ if [ "$(uname -s)" != "Darwin" ]; then
   exit 1
 fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+resolve_ollama() {
+  if [ "${OLLAMA_BIN+x}" = x ]; then
+    [ -x "$OLLAMA_BIN" ] && [ ! -d "$OLLAMA_BIN" ] || { printf '%s\n' 'OLLAMA_BIN harus menunjuk executable.' >&2; exit 1; }
+  elif command -v ollama >/dev/null 2>&1; then
+    OLLAMA_BIN="$(command -v ollama)"
+  else
+    OLLAMA_BIN="$HOME/.local/share/crypto-tracker/ollama/v0.40.15/ollama"
+    [ -x "$OLLAMA_BIN" ] && [ ! -d "$OLLAMA_BIN" ] || { printf '%s\n' 'Pasang Ollama native macOS dari situs resmi terlebih dahulu.' >&2; exit 1; }
+  fi
+}
 case "${1:-check}" in
   check)
-    command -v ollama >/dev/null || { printf '%s\n' 'Pasang Ollama native macOS dari situs resmi terlebih dahulu.' >&2; exit 1; }
-    ollama --version
+    resolve_ollama
+    "$OLLAMA_BIN" --version
     printf '%s\n' 'Pastikan RAM, memory pressure, swap, dan beban runner Gomoku diperiksa sebelum inference.'
     ;;
   create)
-    command -v ollama >/dev/null
+    resolve_ollama
     # Requires an already running local Ollama and a separately downloaded model.
-    OLLAMA_HOST=127.0.0.1:11434 ollama create hermes-crypto-analyst -f "$SCRIPT_DIR/Modelfile"
+    OLLAMA_HOST=127.0.0.1:11434 "$OLLAMA_BIN" create hermes-crypto-analyst -f "$SCRIPT_DIR/Modelfile"
     ;;
   serve)
-    command -v ollama >/dev/null
+    resolve_ollama
     export OLLAMA_HOST=127.0.0.1:11434
     export OLLAMA_NO_CLOUD=1
     export OLLAMA_CONTEXT_LENGTH=4096
@@ -32,9 +42,9 @@ case "${1:-check}" in
       export OLLAMA_KV_CACHE_TYPE="${HERMES_KV_CACHE_TYPE:-q8_0}"
     fi
     if [ "${HERMES_KEEP_AWAKE_AC:-0}" = 1 ]; then
-      exec caffeinate -s ollama serve
+      exec caffeinate -s "$OLLAMA_BIN" serve
     fi
-    exec ollama serve
+    exec "$OLLAMA_BIN" serve
     ;;
   smoke)
     command -v curl >/dev/null

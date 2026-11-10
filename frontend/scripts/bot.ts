@@ -7,6 +7,11 @@ import { acceptUpdate, runOneJob } from '../app/lib/bot-runtime.ts';
 import { telegramRequest, TelegramError } from '../app/lib/telegram.ts';
 import { POST as webhook, GET as diagnostics } from '../app/api/tele-bot/route.ts';
 
+const revision = process.env.BOT_REVISION ?? null;
+const instanceId = process.env.BOT_INSTANCE_ID ?? null;
+if (revision !== null && !/^[0-9a-f]{40}$/.test(revision)) throw new Error('BOT_REVISION harus SHA lowercase 40 karakter.');
+if (instanceId !== null && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(instanceId)) throw new Error('BOT_INSTANCE_ID harus UUID.');
+
 const transport = process.env.BOT_TRANSPORT || 'polling';
 if (!['polling', 'webhook'].includes(transport)) throw new Error('BOT_TRANSPORT harus polling atau webhook.');
 if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_ALLOWED_USER_IDS || !process.env.TELEGRAM_CHAT_ID || (process.env.BOT_API_TOKEN || '').length < 32) throw new Error('Konfigurasi Telegram, owner, chat dan BOT_API_TOKEN minimal32 karakter diperlukan.');
@@ -39,7 +44,7 @@ const server = createServer(async (req, res) => {
     let response: Response;
     if (path === '/health') {
       const ready = !shuttingDown && await store.ready();
-      response = Response.json({ service: 'crypto-bot', ready }, { status: ready ? 200 : 503 });
+      response = Response.json({ service: 'crypto-bot', ready, revision, instanceId }, { status: ready ? 200 : 503 });
     }
     else if (path === '/api/tele-bot' && req.method === 'POST') { response = await webhook(request); wake?.(); }
     else {
