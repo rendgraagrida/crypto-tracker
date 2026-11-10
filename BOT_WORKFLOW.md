@@ -1,12 +1,14 @@
 # Penerapan standar AI pada crypto-tracker
 
-Status diperbarui: runtime bot native, analisis deterministik, loop Hermes read-only custom, paper ledger, quote dan executor terpisah tersedia dalam working tree; live/auto default OFF. Bootstrap produk, retensi bounded dengan tombstone dan CLI bundle/backup ditambahkan. Tujuh migrasi serta restore ber-ACL diuji pada PostgreSQL temporer lokal; bukan database produk. Deployment, Telegram nyata, setup Mac/VPS, migrasi remote, kualitas model dan trading otonom belum diaktifkan. Arsitektur: [HERMES_BOT_ARCHITECTURE.md](./HERMES_BOT_ARCHITECTURE.md); status fase/bukti: [EXECUTION_PLAN.md](./EXECUTION_PLAN.md).
+Runtime bot native, analisis deterministik, loop Hermes read-only custom, paper ledger, quote dan executor terpisah tersedia; live/auto default OFF. Bukti SQL/restore dan 136 tes pada bagian verifikasi adalah historis. Eksekusi lanjutan Mac, launcher, CI/delivery, model dan batas operasi remote dicatat per revisi pada [EXECUTION_PLAN.md](./EXECUTION_PLAN.md); jangan menganggap artefak lokal sebagai aktivasi GitHub, Telegram atau database produk. Arsitektur: [HERMES_BOT_ARCHITECTURE.md](./HERMES_BOT_ARCHITECTURE.md).
 
 ## Pemilik standar
 
-Standar lintas proyek dipindahkan ke `D:/DEVELOPMENT/general/WORKFLOW_7_LEVELS.md` dan dimuat oleh instruksi global omp profil default di mesin pengembang. Dokumen ini hanya adapter dan acceptance plan khusus bot, bukan salinan SOP umum.
+Standar lintas proyek pada profil Mac ini berada di `/Users/rendgra/DEVELOPMENT/general/WORKFLOW_7_LEVELS.md` dan dimuat oleh instruksi global OMP. Dokumen ini hanya adapter dan acceptance plan khusus bot, bukan salinan SOP umum.
 
 Lokasi general adalah konfigurasi pribadi lokal, bukan dependency runtime bot dan bukan file yang otomatis tersedia di GitHub/CI. Clone di mesin lain memerlukan instruksi yang disetujui pemilik pada environment tersebut. Jangan membuat import ke path lokal ini sebagai prasyarat build/deploy aplikasi.
+
+Migrasi legacy yang dipilih adalah feature/fix/chore → `local` → `main`. Bootstrap awal memakai ref lokal tanpa upstream, mempertahankan perubahan pengguna dan tidak mempublikasikan atau commit otomatis. Status branch remote/proteksi/required checks harus dilihat pada bukti task; jangan mengasumsikan `origin/local` atau `origin/development` sudah tersedia. Command kanonis berasal dari konfigurasi global, bukan salinan prompt `.agents/commands` proyek.
 
 [Rancangan arsitektur awal](./BOT_ARCHITECTURE_AND_PLAN.md) dipertahankan sebagai catatan historis. Jika bertentangan, keputusan evaluasi ulang di dokumen ini menggantikan klaim awal yang belum terbukti. SOP umum mengatur izin operasi; dokumen ini tidak mengizinkan push, merge, deploy, rotasi secret di provider atau transaksi uang riil.
 

@@ -1,0 +1,178 @@
+name: Delivery
+
+on:
+  pull_request:
+    branches: [local, main]
+  push:
+    branches: [local, main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Deployment target
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    outputs:
+      revision: ${{ steps.pack.outputs.revision }}
+      digest: ${{ steps.pack.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:all
+      - run: npm run build:frontend
+      - name: Pack exact revision
+        id: pack
+        shell: bash
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          bundle="$RUNNER_TEMP/delivery-bundle"
+          mkdir -m 700 "$bundle"
+          npm run --silent release:pack -- --sha "$REVISION" --out "$bundle/release.json" > "$RUNNER_TEMP/delivery-receipt.json"
+          node --input-type=module - "$RUNNER_TEMP/delivery-receipt.json" "$bundle/release.json" <<'NODE'
+          import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+          import path from 'node:path';
+          import { createHash } from 'node:crypto';
+          const receipt = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          const artifactBytes = readFileSync(process.argv[3]);
+          const release = JSON.parse(artifactBytes.toString('utf8'));
+          const digest = createHash('sha256').update(artifactBytes).digest('hex');
+          if (receipt.revision !== process.env.REVISION || receipt.artifact !== process.argv[3] || receipt.digest !== digest || !/^[0-9a-f]{64}$/.test(digest)) throw new Error('Invalid pack receipt');
+          for (const name of ['delivery.mjs', 'delivery-profile.mjs', 'delivery-service.mjs']) {
+            const entry = release.files.find(file => file.path === `scripts/${name}`);
+            if (!entry || typeof entry.contentBase64 !== 'string') throw new Error('Missing release controller');
+            const bytes = Buffer.from(entry.contentBase64, 'base64');
+            if (bytes.toString('base64') !== entry.contentBase64 || createHash('sha256').update(bytes).digest('hex') !== entry.sha256) throw new Error('Invalid release controller');
+            writeFileSync(path.join(path.dirname(process.argv[3]), name), bytes, { flag: 'wx', mode: 0o600 });
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, `revision=${receipt.revision}\ndigest=${digest}\n`);
+          NODE
+      - name: Upload immutable release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: delivery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/delivery-bundle/
+          if-no-files-found: error
+
+  deploy:
+    needs: quality
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/local') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/local' && inputs.target == 'staging') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.target == 'production')
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'push' && 'staging' || inputs.target }}
+    concurrency:
+      group: delivery-${{ github.event_name == 'push' && 'staging' || inputs.target }}
+      cancel-in-progress: false
+    steps:
+      - name: Validate deployment route
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          INPUT_TARGET: ${{ inputs.target }}
+          REVISION: ${{ needs.quality.outputs.revision }}
+          EXPECTED_SHA: ${{ github.sha }}
+          DIGEST: ${{ needs.quality.outputs.digest }}
+        run: |
+          set -euo pipefail
+          case "$EVENT:$REF:$INPUT_TARGET" in
+            push:refs/heads/local:|workflow_dispatch:refs/heads/local:staging|workflow_dispatch:refs/heads/main:production) ;;
+            *) echo 'Unauthorized deployment route' >&2; exit 1 ;;
+          esac
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$REVISION" == "$EXPECTED_SHA" && "$DIGEST" =~ ^[0-9a-f]{64}$ ]]
+      - uses: actions/download-artifact@v4
+        with:
+          name: delivery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/delivery-bundle
+      - name: Deploy verified release
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          TARGET: ${{ github.event_name == 'push' && 'staging' || inputs.target }}
+          REVISION: ${{ needs.quality.outputs.revision }}
+          DIGEST: ${{ needs.quality.outputs.digest }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_NODE_BIN: ${{ vars.DEPLOY_NODE_BIN }}
+          DEPLOY_PROFILE: ${{ vars.DEPLOY_PROFILE }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          case "$EVENT:$REF:$TARGET" in
+            push:refs/heads/local:staging|workflow_dispatch:refs/heads/local:staging|workflow_dispatch:refs/heads/main:production) ;;
+            *) echo 'Unauthorized deployment route' >&2; exit 1 ;;
+          esac
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_NODE_BIN DEPLOY_PROFILE DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [[ -z "${!name}" ]]; then
+              echo "BELUM AKTIF: $name is not configured for $TARGET" >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$DEPLOY_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ || ! "$DEPLOY_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*[$]?$ || "$DEPLOY_NODE_BIN" != /* || "$DEPLOY_PROFILE" != /* || "$DEPLOY_NODE_BIN" =~ [[:cntrl:]] || "$DEPLOY_PROFILE" =~ [[:cntrl:]] ]]; then
+            echo 'BELUM AKTIF: invalid deployment configuration' >&2
+            exit 1
+          fi
+          bundle="$RUNNER_TEMP/delivery-bundle"
+          [[ -f "$bundle/delivery.mjs" && -f "$bundle/delivery-profile.mjs" && -f "$bundle/delivery-service.mjs" && -f "$bundle/release.json" ]]
+          actual_digest="$(sha256sum "$bundle/release.json")"
+          [[ "${actual_digest%% *}" == "$DIGEST" ]]
+          node --input-type=module - "$bundle" <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          import path from 'node:path';
+          const bundle = process.argv[2];
+          const bytes = readFileSync(path.join(bundle, 'release.json'));
+          if (createHash('sha256').update(bytes).digest('hex') !== process.env.DIGEST) throw new Error('Invalid release digest');
+          const release = JSON.parse(bytes.toString('utf8'));
+          if (release.revision !== process.env.REVISION) throw new Error('Invalid release revision');
+          for (const name of ['delivery.mjs', 'delivery-profile.mjs', 'delivery-service.mjs']) {
+            const entry = release.files.find(file => file.path === `scripts/${name}`);
+            if (!entry || createHash('sha256').update(readFileSync(path.join(bundle, name))).digest('hex') !== entry.sha256) throw new Error('Controller is not bound to release');
+          }
+          NODE
+          local_inbox="$(mktemp -d "$RUNNER_TEMP/delivery-ssh.XXXXXXXXXX")"
+          remote_inbox=''
+          cleanup() {
+            if [[ -n "$remote_inbox" ]]; then
+              ssh "${ssh_options[@]}" "$destination" "rm -rf -- '$remote_inbox'" || echo 'Failed to remove owned remote inbox' >&2
+            fi
+            rm -rf -- "$local_inbox"
+          }
+          trap cleanup EXIT
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$local_inbox/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$local_inbox/known_hosts"
+          chmod 600 "$local_inbox/key" "$local_inbox/known_hosts"
+          destination="$DEPLOY_USER@$DEPLOY_HOST"
+          ssh_options=(-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$local_inbox/known_hosts" -o GlobalKnownHostsFile=/dev/null -i "$local_inbox/key")
+          remote_inbox="$(ssh "${ssh_options[@]}" "$destination" 'umask 077; mktemp -d /tmp/crypto-delivery.XXXXXXXXXX')"
+          if [[ ! "$remote_inbox" =~ ^/tmp/crypto-delivery\.[a-zA-Z0-9]{10}$ ]]; then
+            remote_inbox=''
+            echo 'Invalid remote inbox' >&2
+            exit 1
+          fi
+          scp "${ssh_options[@]}" "$bundle/delivery.mjs" "$bundle/delivery-profile.mjs" "$bundle/delivery-service.mjs" "$bundle/release.json" "$destination:$remote_inbox/"
+          quote() { local value=${1//\'/\'\\\'\'}; printf "'%s'" "$value"; }
+          command="$(quote "$DEPLOY_NODE_BIN") $(quote "$remote_inbox/delivery.mjs") deploy --config $(quote "$DEPLOY_PROFILE") --target $(quote "$TARGET") --artifact $(quote "$remote_inbox/release.json") --sha $(quote "$REVISION") --digest $(quote "$DIGEST") --event $(quote "$EVENT") --ref $(quote "$REF")"
+          ssh "${ssh_options[@]}" "$destination" "$command"

@@ -4,7 +4,8 @@ begin read only;
 select clock_timestamp() as observed_at,current_database() as database,
        pg_database_size(current_database()) as database_bytes,
        pg_size_pretty(pg_database_size(current_database())) as database_size;
-select relname,pg_total_relation_size(relid) as total_bytes,
+select relname,pg_relation_size(relid) as heap_bytes,pg_indexes_size(relid) as index_bytes,
+       pg_total_relation_size(relid) as total_bytes,
        pg_size_pretty(pg_total_relation_size(relid)) as total_size
 from pg_catalog.pg_statio_user_tables order by pg_total_relation_size(relid) desc,relname limit 15;
 select kind,status,count(*) as rows,min(created_at) as oldest_created,

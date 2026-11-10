@@ -131,6 +131,8 @@ describe('Native Process Integration Smoke Test', () => {
   const OWNER_USER_ID = '1001';
   const UNOWNER_USER_ID = '2002';
   const ALLOWED_CHAT_ID = '-2001';
+  const revision = 'a'.repeat(40);
+  const instanceId = '123e4567-e89b-42d3-a456-426614174000';
 
   before(async () => {
     // Start parent fake PostgREST + provider proxy HTTP fixture
@@ -685,6 +687,8 @@ describe('Native Process Integration Smoke Test', () => {
           NODE_ENV: 'test',
           BOT_TRANSPORT: 'webhook',
           BOT_PORT: String(targetPort),
+          BOT_REVISION: revision,
+          BOT_INSTANCE_ID: instanceId,
           BOT_API_TOKEN,
           TELEGRAM_BOT_TOKEN: 'synthetic_telegram_bot_token_123',
           TELEGRAM_ALLOWED_USER_IDS: `${OWNER_USER_ID}, ${UNOWNER_USER_ID}`,
@@ -725,6 +729,34 @@ describe('Native Process Integration Smoke Test', () => {
 
     return { child, stop };
   }
+
+  test('health exposes the supplied runtime identity', async () => {
+    const response = await fetch(`http://127.0.0.1:${botPort}/health`);
+    const body = await response.json() as { service: string; ready: boolean; revision: string; instanceId: string };
+    assert.equal(response.status, 200);
+    assert.equal(body.service, 'crypto-bot');
+    assert.equal(body.ready, true);
+    assert.equal(body.revision, revision);
+    assert.equal(body.instanceId, instanceId);
+  });
+
+  test('invalid runtime identities fail before configuration or external startup', async () => {
+    for (const identity of [{ BOT_REVISION: 'ABC' }, { BOT_INSTANCE_ID: 'not-a-uuid' }]) {
+      const child = spawn(process.execPath, ['--no-warnings', '--experimental-strip-types', 'scripts/bot.ts'], {
+        cwd: frontendDir,
+        env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...identity },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let error = '';
+      child.stderr!.on('data', chunk => { error += chunk; });
+      const { promise, resolve: resolveExit, reject } = Promise.withResolvers<number | null>();
+      child.once('error', reject);
+      child.once('exit', resolveExit);
+      const code = await promise;
+      assert.notEqual(code, 0);
+      assert.match(error, /BOT_(REVISION|INSTANCE_ID)/);
+    }
+  });
 
   test('daily maintenance retries cleanup failure and completes under its lease', async () => {
     const id = `maintenance:${new Date().toISOString().slice(0, 10)}`;

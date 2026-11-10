@@ -1,4 +1,4 @@
-FROM hermes3:8b
+FROM hermes3:3b
 PARAMETER num_ctx 4096
 PARAMETER temperature 0
 PARAMETER num_predict 160

@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+if [ -L "$0" ]; then
+  printf '%s\n' 'Refusing symlinked launcher; run the project local file directly.' >&2
+  exit 1
+fi
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+exec node "$root/scripts/local.mjs" "$@"
