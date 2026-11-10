@@ -1,6 +1,6 @@
 # Crypto Bot Hybrid: runtime VPS dan Hermes lokal MacBook
 
-Status: implementasi lokal analisis, paper ledger, kuotasi, executor terpisah serta bootstrap/retensi; **live/auto OFF**, tidak ada transaksi uang riil. Tujuh migrasi dan restore ber-ACL diuji pada cluster PostgreSQL temporer lokal; belum diterapkan ke database produk/Supabase remote. MacBook/VPS belum dipasang atau deploy. Standar dan izin mengikuti [BOT_WORKFLOW.md](./BOT_WORKFLOW.md); status fase/bukti di [EXECUTION_PLAN.md](./EXECUTION_PLAN.md).
+Status: implementasi lokal analisis, paper ledger, kuotasi, executor terpisah serta bootstrap/retensi; **live/auto OFF**, tidak ada transaksi uang riil. Bukti implementasi lama dibedakan dari eksekusi Mac terkini pada [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). Pemasangan model atau artefak delivery tidak mengaktifkan Supabase, Telegram, staging atau production. Standar dan izin mengikuti [BOT_WORKFLOW.md](./BOT_WORKFLOW.md).
 
 ## 1. Keputusan dan scope
 
@@ -109,16 +109,26 @@ Default transport polling memeriksa webhook existing dan menolak berjalan bila w
 
 ## 6. Setup Hermes native pada MacBook
 
-Belum ada koneksi/inspeksi MacBook pada task ini. Identitas chip, RAM, storage, model terpasang, dan jaringan harus diperiksa pada Mac. Tidak mengasumsikan M1 runner berarti punya headroom inference.
+Host eksekusi lanjutan diperiksa: Apple M1, RAM8GB, macOS14.5. Biner Ollama dan model3B telah diuji native; hasil, digest, batas kualitas dan resource ada di runbook. Pengujian beban Gomoku/runner berat dan deployment VPS tetap memerlukan bukti sendiri; identitas M1 tidak menjamin headroom inference.
 
-1. Pasang Ollama **native macOS** dari [situs resmi](https://ollama.com/download/mac), mengikuti minimum macOS/vendor saat instalasi. Jangan jalankan model melalui Docker Desktop di Mac bila mengharapkan GPU Metal.
+1. Pasang Ollama **native macOS** dari [situs resmi](https://ollama.com/download/mac), mengikuti minimum macOS/vendor. Instalasi CLI terverifikasi task ini berada di `$HOME/.local/share/crypto-tracker/ollama/v0.40.15/ollama`, tanpa daemon sistem atau perubahan PATH/shellrc. Script menerima `OLLAMA_BIN` executable eksplisit, lalu mencari PATH, lalu lokasi instalasi tersebut. Jangan jalankan model melalui Docker.
 2. Dari checkout proyek pada Mac, `bash scripts/hermes/mac-hermes.sh check`.
-3. Di terminal pertama: `bash scripts/hermes/mac-hermes.sh serve`. Default bind **127.0.0.1**, satu model, satu request paralel, context4096, queue4, keep-alive5m, cloud dimatikan. Quit instance Ollama GUI lain lebih dahulu secara sengaja bila port sama sudah dipakai; script tidak membunuh proses lain.
-4. Di terminal kedua: `ollama pull hermes3:8b` (download memerlukan jaringan/storage), lalu `bash scripts/hermes/mac-hermes.sh create` untuk membuat `hermes-crypto-analyst` dari Modelfile yang dilacak.
-5. Periksa `ollama ps`, Activity Monitor memory pressure/swap dan respons saat runner CI Gomoku aktif. Tidak ada klaim token/detik atau RAM pasti. Jika model8b terlalu berat, evaluasi tag lebih kecil yang benar-benar tersedia, ubah FROM secara sengaja dan ulang evaluasi. Jangan menjanjikan model8b aman pada RAM8GB.
+3. Untuk memakai modelstore task ini, set `export OLLAMA_MODELS="$HOME/.local/share/crypto-tracker/models"` sebelum `bash scripts/hermes/mac-hermes.sh serve`. Default bind **127.0.0.1**, satu model, satu request paralel, context4096, queue4, keep-alive5m, cloud dimatikan. Port terpakai berarti konflik; jangan menghentikan instance yang ownership-nya tidak terbukti.
+4. Di terminal kedua, gunakan binary yang sama (atau `OLLAMA_BIN` eksplisit) untuk `pull hermes3:3b`, lalu `bash scripts/hermes/mac-hermes.sh create` untuk membuat `hermes-crypto-analyst` dari Modelfile yang dilacak. Task ini sudah mengunduh base3b; jangan mengunduh ulang hanya untuk pemeriksaan identik.
+5. Periksa `ollama ps` melalui binary yang dipilih, `memory_pressure -Q`, swap dan latency cold/warm. RSS proses bukan total alokasi Metal/unified memory. Pilihan3b ditujukan untuk mesin8GB; kebutuhan8b belum dibenchmark. Pengukuran idle bukan bukti headroom saat Gomoku/runner berat, sehingga tidak ada jaminan model aman untuk semua beban cohosting.
 6. `HERMES_FLASH_ATTENTION=1 bash scripts/hermes/mac-hermes.sh serve` mengaktifkan optimasi opsional; KV q8_0 dapat mengubah presisi. Bandingkan sebelum/sesudah, bukan klaim tanpa kehilangan akurasi. Default parallel1 menghindari penggandaan context karena concurrency.
 7. Opsional, di charger dengan tutup laptop terbuka: `HERMES_KEEP_AWAKE_AC=1 bash scripts/hermes/mac-hermes.sh serve`. `caffeinate -s` tidak menjamin lid-close tetap hidup dan tidak mengubah kebijakan sleep global. Saat Mac sleep/offline bot tetap memberi scorecard deterministik.
 8. Setelah model siap, `bash scripts/hermes/mac-hermes.sh smoke` mengirim evidence sintetis dan memvalidasi schema/allowlist output dengan Node proyek. Gagal schema/timeout harus diperbaiki sebelum tunnel diaktifkan; smoke bukan pengukuran kualitas atau profitabilitas.
+
+Evaluasi memakai client/schema/guardrail bot yang sama, tidak membuat gateway atau prompt kedua:
+
+```sh
+HERMES_API_URL=http://127.0.0.1:11434/v1/chat/completions \
+HERMES_MODEL=hermes-crypto-analyst HERMES_AGENT_MODE=stateless \
+npm run hermes:eval -- frontend/test/fixtures/hermes-eval.v1.json holdout
+```
+
+Dataset ini sintetis berversi dengan label dan family holdout terpisah. Baseline first-four-ID hanya pembanding evaluasi, bukan klaim ranker production. Label/prompt tidak dituning setelah holdout dibaca. Hasil model3b belum mengungguli baseline; `readonly_agent` banyak timeout pada5detik dan belum direkomendasikan untuk aktivasi. Pertahankan mode default `stateless`, laporan deterministik dan AI opsional; jangan menaikkan timeout melewati hard cap client atau menyebut hasil ini profit/ketahanan prompt injection. Paparan tool injection yang tidak sempat terjadi harus tetap dilaporkan belum teruji.
 
 ### Koneksi VPS ke Mac tanpa mengekspos Ollama
 
@@ -142,9 +152,9 @@ Default yang disiapkan ialah SSH reverse tunnel terenkripsi. Tidak perlu membuka
 
 ## 8. Verifikasi dan batas
 
-Entry point checks: `npm run check`, `npm run test:frontend`, `npm run test:all`. Suite integrasi menjalankan proses bot asli dengan service eksternal fixture lokal dan environment sintetis; tidak menyentuh Telegram/DB production.
+Entry point checks: `npm run check`, `npm run test:all`, `npm run build:frontend`. Suite frontend dan kontrak script root dijalankan masing-masing sekali; tidak perlu mengulang `test:frontend` untuk revisi/scope identik. Suite integrasi memakai proses bot asli dengan service eksternal fixture lokal dan environment sintetis, bukan Telegram/DB production.
 
-Bukti pada implementasi lokal ini:
+Bukti historis implementasi sebelum eksekusi Mac lanjutan; hasil terkini per revisi tetap dimiliki runbook:
 
 | Pemeriksaan | Hasil diamati |
 |---|---|
@@ -163,7 +173,7 @@ Bukti pada implementasi lokal ini:
 | Historis task trading: balapan reserve | Dua sesi reserve7 dengan budget10 pernah membuktikan satu diterima/satu ditolak; bukan rerun pada task retensi. |
 | Review keamanan terpisah | Re-review statis tidak menemukan HIGH/MED blocking pada perubahan yang diperiksa. Bukan sertifikasi production. |
 
-Belum diuji: deployment Supabase/PostgREST nyata, Telegram/provider/chain live, model Hermes dan tunnel Mac, evaluasi kualitas AI berlabel/holdout, benchmark VPS/Gomoku, Docker build, systemd/permission host dan recovery database produk. Replay sintetis membuktikan prosedur/aritmetika, bukan profitabilitas AI. Cluster SQL temporer bukan database pengguna.
+Bukti historis di tabel tidak membuktikan deployment Supabase/PostgREST, Telegram/provider/chain live, tunnel, kualitas pasar nyata, beban VPS/Gomoku, Docker, native systemd-user atau recovery database produk. Eksekusi Mac lanjutan menambahkan inferensi/evaluasi sintetis serta drill SQL/backup lokal sesuai bukti runbook; itu bukan aktivasi layanan tersebut atau bukti profitabilitas AI.
 
 Gate UI removal: CRUD/rename/pin, pagination, portfolio, history/trades/holders/indicators, blacklist/whitelist, settings, error handling dan interaksi Telegram harus terbukti pada surface yang disepakati. Sementara gate belum lengkap, UI/axios tetap ada tetapi tidak menjadi beban runtime bot native. Jangan menganggap keberadaan command sama dengan acceptance pengguna.
 
